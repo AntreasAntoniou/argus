@@ -21,7 +21,7 @@ tmux/claude-squad: persistence) but nobody ships **explicit state + interrupt ro
 1. **No gravity.** Argus observes sessions however they were born (anastasis fleet,
    bare `claude`, SSH boxes). Never a mandatory `argus run` wrapper.
 2. **State, not text.** Every agent gets an explicit state machine
-   (`thinking / editing / testing / blocked / idle / done / dead`), never inferred
+   (`starting / thinking / editing / testing / running / blocked / idle / done / dead`), never inferred
    by a human from scrollback. Dead-agent detection is first-class.
 3. **Attention routing is the core primitive.** Blocked agents float to the top with
    their exact question; everything not needing the human dims.
@@ -77,10 +77,12 @@ tmux/claude-squad: persistence) but nobody ships **explicit state + interrupt ro
 
 ### State machine (per session)
 
-`starting → thinking ⇄ tool:<name> (editing/testing/running) → blocked(question) → … → done | dead`
+`starting → thinking ⇄ tool:<name> (editing/testing/running) → blocked(question) | idle → … → done | dead`
 
 - `blocked`: Notification hook (permission prompt / question) or idle-with-prompt
   detected via capture-pane.
+- `idle`: session alive, prompt empty, not blocked — awaiting input with nothing
+  queued (idle-with-prompt is `blocked`, per above).
 - `dead`: tmux pane gone or JSONL silent past threshold while state ≠ done.
 - Every transition carries: session_id, machine, cwd, branch, tokens, last tool,
   diff-stat cache.
@@ -102,3 +104,8 @@ WhatsApp digest for a new block; drill into any agent's timeline and diff.
 
 Web board at antreas.io/dev/argus (same SSE API), macOS menubar satellite,
 ntfy priority channel, phone inline replies, historical analytics.
+
+## Amendments
+
+- 2026-07-15: consistency fix — unified state vocabulary between principle 2 and
+  the State machine section; no semantic design change.
