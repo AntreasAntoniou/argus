@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "argus"
+version = "0.1.0"
+description = "The hundred-eyed watchman for your coding-agent fleet."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.14"
+authors = [{ name = "Antreas Antoniou", email = "antreas@axiotic.ai" }]
+keywords = ["claude-code", "tui", "fastapi", "observability", "agents"]
+
+# Runtime dependencies. tomllib is stdlib (read); tomli-w is for writing config.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "watchfiles>=1.0",
+    "textual>=1.0",
+    "httpx>=0.28",
+    "sse-starlette>=2.1",
+    "tomli-w>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.112",
+    "ruff>=0.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/AntreasAntoniou/argus"
+Repository = "https://github.com/AntreasAntoniou/argus"
+
+[project.scripts]
+argusd = "argus.cli:daemon_main"
+argus = "argus.cli:tui_main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/argus"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# pycodestyle (E), pyflakes (F), isort (I), pyupgrade (UP), bugbear (B).
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"
