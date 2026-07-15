@@ -1,0 +1,17 @@
+[project]
+name = "argus"
+version = "0.0.1"
+description = "The hundred-eyed watchman for your coding-agent fleet (design stage: no runtime source yet)."
+requires-python = ">=3.14"
+license = { text = "MIT" }
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+# Design-stage repo: docs + tests only, nothing to build or install yet.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
