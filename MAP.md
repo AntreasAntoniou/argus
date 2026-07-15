@@ -43,8 +43,10 @@ Claude Code sessions (any machine)
 
 ```
 starting → thinking ⇄ tool:<name> (editing/testing/running)
-        → blocked(question) → … → done | dead
+        → blocked(question) | idle → … → done | dead
 ```
+
+Canonical state vocabulary (matches DESIGN.md exactly): `starting`, `thinking`, `tool:<name>` (`editing`/`testing`/`running`), `blocked`, `idle`, `done`, `dead`.
 
 Transitions carry: `session_id`, machine, cwd, branch, tokens, last tool, diff-stat cache.
 
@@ -79,7 +81,7 @@ No code exists yet. The design-locked entry points that v1 must provide:
 | `DESIGN.md` | Markdown | **Canonical design record (locked 2026-07-15).** Principles, 9 locked decisions, architecture, components, per-session state machine, v1 acceptance criteria, v2 deferrals. | Component specs: `argusd` (:67), `argus` TUI (:69), hook pack / `argus install-hooks` (:73), state store (:76); `POST /hook` endpoint (:50); session state machine (:80); v1 acceptance demo (:96) |
 | `README.md` | Markdown | Public-facing overview: pitch, ASCII board mockup, why (state-not-text, interrupt queue, no gravity, fleet-wide mesh, drill-down), the three ingestion paths, status (early), MIT. Links to DESIGN.md. | — |
 | `LICENSE` | Text | MIT License, Copyright (c) 2026 Antreas Antoniou. | — |
-| `.gitignore` | gitignore | Python build/cache artifacts, venvs, coverage, SQLite DBs, `.env`, `config.local.toml` — enforces "no secrets in repo"; runtime state lives in `~/.argus/`. | — |
+| `.gitignore` | gitignore | Python build/cache artifacts, venvs, test/type/lint caches (`.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/`, `.hypothesis/`, `.tox/`, `.nox/`), coverage, SQLite DBs (`*.sqlite3`/`*.sqlite`/`*.db`), `.env`, `config.local.toml`, `*.log`, editor & local tool state (`.idea/`, `.vscode/`, `.claude/settings.local.json`, `.DS_Store`) — enforces "no secrets in repo"; runtime state lives in `~/.argus/`. | — |
 
 ## 4. Dependency sketch
 
@@ -109,5 +111,5 @@ README.md ──links──▶ DESIGN.md        (design record is the source of 
 ## 5. Notes for workers
 
 - **DESIGN.md is locked** — build to it; deviations need an explicit design change, not silent drift.
-- No package scaffolding (`pyproject.toml`, `src/`, tests) exists yet — the first build wave creates it.
+- No Python source (`src/`) exists yet — the first build wave creates it. This hardening wave adds `pyproject.toml`, `tests/test_docs_consistency.py` (mechanical MAP.md ↔ DESIGN.md anchor/vocabulary checks), and `.github/workflows/ci.yml` (tasks M5/M6).
 - `.gitignore` already anticipates the runtime shape: SQLite DBs, `.env`, and `config.local.toml` never enter the repo; all runtime state belongs in `~/.argus/`.
