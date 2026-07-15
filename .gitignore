@@ -9,10 +9,20 @@ build/
 .ruff_cache/
 .mypy_cache/
 .coverage
+.coverage.*
 htmlcov/
+.hypothesis/
+.tox/
+.nox/
 # Argus runtime state & secrets live in ~/.argus/, never here
 *.sqlite3
+*.sqlite
 *.db
 .env
 config.local.toml
+*.log
+# Editor & local tool state
+.idea/
+.vscode/
+.claude/settings.local.json
 .DS_Store
