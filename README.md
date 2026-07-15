@@ -7,7 +7,7 @@ one glanceable board that answers the only question that matters:
 **which agent needs me right now?**
 
 ```
-┌ ARGUS ──────────────────────────────── 7 eyes open ┐
+┌ ARGUS ──────────────────────────────── 6 eyes open ┐
 │ ⚠ NEEDS YOU (2)                                    │
 │ ▸ hermes-fix   astrape  “Run db migration? (y/n)”  │
 │ ▸ ogma-eval    forge    “Push to main?”            │
@@ -26,7 +26,7 @@ on *you*. Past 3–4 parallel agents, raw terminal panes make **you** the dashbo
 Argus inverts that:
 
 - **State, not text** — every session gets an explicit state machine
-  (`thinking / editing / testing / blocked / done / dead`), including dead-agent
+  (`thinking / editing / testing / blocked / idle / done / dead`), including dead-agent
   detection tmux will never give you.
 - **Interrupt queue** — blocked agents float to the top with their exact question;
   answer `y`/`n`/typed replies inline (guarded injection: Argus verifies the prompt
