@@ -8,7 +8,6 @@ backwards, and where ``tool_name`` is set iff the status is ``TOOL``.
 
 from __future__ import annotations
 
-import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -22,14 +21,18 @@ _HOOK_NAMES = [h.value for h in HookEvent]
 def event_seqs(draw: st.DrawFn) -> list[Event]:
     names = draw(st.lists(st.sampled_from(_HOOK_NAMES), min_size=1, max_size=12))
     return [
-        Event(session_id="s1", machine="mac", hook_event_name=n,
-              tool_name="Edit" if n in (HookEvent.PRE_TOOL_USE,
-                                        HookEvent.POST_TOOL_USE) else None)
+        Event(
+            session_id="s1",
+            machine="mac",
+            hook_event_name=n,
+            tool_name="Edit"
+            if n in (HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE)
+            else None,
+        )
         for n in names
     ]
 
 
-@pytest.mark.xfail(reason="stub", strict=False)
 @given(events=event_seqs())
 def test_reduce_preserves_invariants(events: list[Event]) -> None:
     snap: SessionSnapshot | None = None

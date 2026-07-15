@@ -1,11 +1,10 @@
 """Pure-ish state reducer — events fold into the session state machine.
 
-STUB — precise typed contract only. Implementers: implement the transition
-table from ``DESIGN.md`` §State machine::
+Implements the transition table from ``DESIGN.md`` §State machine::
 
     starting -> thinking <-> tool:<name> -> blocked(question) -> ... -> done | dead
 
-Mapping guidance (source hook -> target status):
+Mapping (source hook -> target status):
     - ``SessionStart``           -> STARTING
     - ``UserPromptSubmit``       -> THINKING
     - ``PreToolUse``             -> TOOL   (set ``tool_name``/``last_tool``)
@@ -22,10 +21,16 @@ clock + tmux liveness, which are effects the caller supplies.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from argus.config import Thresholds
-from argus.models import Event, SessionSnapshot
+from argus.models import Event, HookEvent, SessionSnapshot, SessionStatus
+
+# Terminal states never regress except on an explicit restart (SessionStart).
+_TERMINAL = (SessionStatus.DONE, SessionStatus.DEAD)
+
+# Notification payload keys, most-specific first, that may carry the prompt.
+_QUESTION_KEYS = ("notification", "message", "prompt", "question", "body")
 
 
 def reduce(snapshot: SessionSnapshot | None, event: Event) -> SessionSnapshot:
@@ -50,7 +55,65 @@ def reduce(snapshot: SessionSnapshot | None, event: Event) -> SessionSnapshot:
           explicit restart (new ``SessionStart``).
     """
 
-    raise NotImplementedError("Implement the DESIGN.md state-machine transition table")
+    hook = event.hook_event_name
+    is_restart = hook == HookEvent.SESSION_START
+
+    if snapshot is None:
+        snapshot = SessionSnapshot(
+            session_id=event.session_id,
+            machine=event.machine,
+            status=SessionStatus.STARTING,
+        )
+
+    # Always refresh liveness metadata (updated_at, cwd) even when a terminal
+    # state pins the status.
+    snapshot.updated_at = event.ts
+    if event.cwd is not None:
+        snapshot.cwd = event.cwd
+
+    # A terminal session only advances on an explicit restart.
+    if snapshot.status in _TERMINAL and not is_restart:
+        return snapshot
+
+    if is_restart:
+        snapshot.status = SessionStatus.STARTING
+        snapshot.tool_name = None
+        snapshot.question = None
+    elif hook == HookEvent.USER_PROMPT_SUBMIT:
+        snapshot.status = SessionStatus.THINKING
+        snapshot.tool_name = None
+        snapshot.question = None
+    elif hook == HookEvent.PRE_TOOL_USE:
+        snapshot.status = SessionStatus.TOOL
+        snapshot.tool_name = event.tool_name
+        if event.tool_name is not None:
+            snapshot.last_tool = event.tool_name
+        snapshot.question = None
+    elif hook == HookEvent.POST_TOOL_USE:
+        snapshot.status = SessionStatus.THINKING
+        if event.tool_name is not None:
+            snapshot.last_tool = event.tool_name
+        snapshot.tool_name = None
+        snapshot.question = None
+    elif hook == HookEvent.NOTIFICATION:
+        snapshot.status = SessionStatus.BLOCKED
+        snapshot.tool_name = None
+        snapshot.question = extract_question(event)
+    elif hook in (HookEvent.STOP, HookEvent.SUBAGENT_STOP):
+        snapshot.status = SessionStatus.IDLE
+        snapshot.tool_name = None
+        snapshot.question = None
+    elif hook == HookEvent.SESSION_END:
+        snapshot.status = SessionStatus.DONE
+        snapshot.tool_name = None
+        snapshot.question = None
+    elif snapshot.status is not SessionStatus.TOOL:
+        # Unknown / synthetic (non-hook) events (e.g. "transcript", "tmux.dead")
+        # only refresh metadata above and drive no transition, but we still
+        # enforce the tool_name-iff-TOOL invariant defensively.
+        snapshot.tool_name = None
+
+    return snapshot
 
 
 def extract_question(event: Event) -> str | None:
@@ -64,7 +127,12 @@ def extract_question(event: Event) -> str | None:
         ``"Run db migration? (y/n)"``), or ``None`` if none present.
     """
 
-    raise NotImplementedError("Parse notification payload for the pending question")
+    raw = event.raw or {}
+    for key in _QUESTION_KEYS:
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
 
 
 def is_dead(
@@ -93,4 +161,15 @@ def is_dead(
         ``True`` if the session should transition to ``DEAD``.
     """
 
-    raise NotImplementedError("Implement pane-gone / jsonl-silent dead detection")
+    if snapshot.status is SessionStatus.DONE:
+        return False
+
+    if not pane_alive:
+        return True
+
+    if last_jsonl_activity is not None:
+        silent_for = now - last_jsonl_activity
+        if silent_for > timedelta(seconds=thresholds.jsonl_silent_seconds):
+            return True
+
+    return False
