@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+# Argus runtime state & secrets live in ~/.argus/, never here
+*.sqlite3
+*.db
+.env
+config.local.toml
+.DS_Store
