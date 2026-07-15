@@ -10,8 +10,37 @@ server.
 
 from __future__ import annotations
 
-import subprocess  # noqa: F401  (used by implementers of the wrappers below)
+import re
+import subprocess
 from dataclasses import dataclass
+
+# Field separator for the ``list-panes`` format string: a control char that will
+# not occur inside a session name, command, or pane title.
+_SEP = "\x1f"
+
+_LIST_FORMAT = _SEP.join(
+    (
+        "#{pane_id}",
+        "#{session_name}",
+        "#{window_index}",
+        "#{pane_current_command}",
+        "#{pane_pid}",
+    )
+)
+
+# Heuristic markers of an on-screen prompt awaiting the human. Kept deliberately
+# narrow so an agent's ordinary working output does not read as a question:
+#   - an explicit yes/no affordance ``(y/n)`` / ``[y/n]`` / ``(yes/no)``
+#   - Claude Code's permission box lead-in ``Do you want to ...``
+#   - a trailing ``proceed?`` / ``continue?`` confirmation
+#   - a ``Press Enter to continue`` gate
+_PROMPT_PATTERNS = (
+    re.compile(r"[(\[]\s*y\s*/\s*n\s*[)\]]", re.IGNORECASE),
+    re.compile(r"\(\s*yes\s*/\s*no\s*\)", re.IGNORECASE),
+    re.compile(r"\bdo you want to\b", re.IGNORECASE),
+    re.compile(r"\b(?:proceed|continue|overwrite|allow)\s*\?", re.IGNORECASE),
+    re.compile(r"press\s+(?:enter|return)\s+to\s+continue", re.IGNORECASE),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +62,16 @@ class Pane:
     pid: int | None = None
 
 
+def _tmux(*args: str, socket: str | None) -> list[str]:
+    """Build a ``tmux`` argv, threading ``-L <socket>`` when given."""
+
+    cmd = ["tmux"]
+    if socket is not None:
+        cmd += ["-L", socket]
+    cmd += list(args)
+    return cmd
+
+
 def list_panes(*, socket: str | None = None) -> list[Pane]:
     """Enumerate all tmux panes on the given server.
 
@@ -46,7 +85,30 @@ def list_panes(*, socket: str | None = None) -> list[Pane]:
         FileNotFoundError: If the ``tmux`` binary is not on ``PATH``.
     """
 
-    raise NotImplementedError("tmux list-panes -a -F <format>, parse into Pane list")
+    proc = subprocess.run(
+        _tmux("list-panes", "-a", "-F", _LIST_FORMAT, socket=socket),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        # No server / no sessions is not an error for us — just nothing to list.
+        return []
+
+    panes: list[Pane] = []
+    for line in proc.stdout.splitlines():
+        if not line:
+            continue
+        pane_id, session_name, window_index, title, pid = line.split(_SEP)
+        panes.append(
+            Pane(
+                pane_id=pane_id,
+                session_name=session_name,
+                window_index=int(window_index),
+                title=title,
+                pid=int(pid) if pid else None,
+            )
+        )
+    return panes
 
 
 def capture_pane(pane_id: str, *, socket: str | None = None, lines: int = 200) -> str:
@@ -64,7 +126,15 @@ def capture_pane(pane_id: str, *, socket: str | None = None, lines: int = 200) -
         subprocess.CalledProcessError: If the pane does not exist.
     """
 
-    raise NotImplementedError("tmux capture-pane -p -t <pane> -S -<lines>")
+    proc = subprocess.run(
+        _tmux(
+            "capture-pane", "-p", "-t", pane_id, "-S", f"-{lines}", socket=socket
+        ),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return proc.stdout
 
 
 def is_pane_alive(pane_id: str, *, socket: str | None = None) -> bool:
@@ -73,7 +143,7 @@ def is_pane_alive(pane_id: str, *, socket: str | None = None) -> bool:
     Feeds :func:`argus.reducer.is_dead` (pane-gone -> dead).
     """
 
-    raise NotImplementedError("Check pane_id against list_panes()")
+    return any(p.pane_id == pane_id for p in list_panes(socket=socket))
 
 
 def detect_prompt(pane_text: str) -> str | None:
@@ -91,7 +161,13 @@ def detect_prompt(pane_text: str) -> str | None:
         prompt (agent still working).
     """
 
-    raise NotImplementedError("Regex/heuristic detect a pending prompt in pane text")
+    for line in reversed(pane_text.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(pat.search(stripped) for pat in _PROMPT_PATTERNS):
+            return stripped
+    return None
 
 
 def send_keys(
@@ -113,4 +189,14 @@ def send_keys(
         enter: Whether to append a trailing ``Enter``.
     """
 
-    raise NotImplementedError("tmux send-keys -t <pane> -l <text> [Enter]")
+    # ``-l`` sends the text literally so key names inside it are not interpreted.
+    subprocess.run(
+        _tmux("send-keys", "-t", pane_id, "-l", text, socket=socket),
+        check=True,
+    )
+    if enter:
+        # A separate, non-literal call so ``Enter`` resolves to the key.
+        subprocess.run(
+            _tmux("send-keys", "-t", pane_id, "Enter", socket=socket),
+            check=True,
+        )
