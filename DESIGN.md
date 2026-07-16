@@ -98,6 +98,19 @@ prompt on astrape floats to the top within 2s; answer `y` inline (guarded); watc
 its state flip; kill a pane and see `dead` within 15s; walk away, get a batched
 WhatsApp digest for a new block; drill into any agent's timeline and diff.
 
+## Known hardening items (v1.1)
+
+- **Bounded/incremental transcript backfill.** The startup JSONL backfill scans
+  the whole `claude_projects_root`. Over a large real `~/.claude/projects` the
+  initial scan is heavy and, more importantly, does not hit a cancellation
+  checkpoint promptly — graceful shutdown blocks for a long time cancelling the
+  watcher mid-scan. Fix: bound backfill to recent files (mtime window /
+  most-recent-N), yield control during the scan, and make the watch loop
+  cancellation-responsive. Functionality is correct; this is latency/robustness.
+- **Federation auth.** Peer endpoints (`/peer/event`, `/peer/state`) are
+  currently open on the LAN/tailnet; add a shared-secret header before exposing
+  beyond a trusted network.
+
 ## Deferred (v2+)
 
 Web board at antreas.io/dev/argus (same SSE API), macOS menubar satellite,

@@ -1,0 +1,38 @@
+# Argus configuration — copy to ~/.argus/config.toml and edit.
+# Every field is optional; omitted values fall back to the defaults shown here.
+# NEVER commit your real ~/.argus/config.toml — it may name your machines/peers.
+
+# Stable identity for THIS machine, tagged onto every event in the mesh.
+machine = "hestia"
+
+# Full-mesh peers: every other argusd this node exchanges state with.
+# host:port of each peer's daemon. Empty = single-machine mode.
+peers = []
+# peers = ["astrape:8787", "forge:8787", "odysseus:8787"]
+
+# Port this node's daemon (HTTP + hook receiver + SSE) listens on.
+daemon_port = 8787
+
+[thresholds]
+# A session with a live tmux pane but no JSONL activity for this long, and not
+# already 'done', is flagged DEAD.
+dead_after_seconds = 15
+jsonl_silent_seconds = 45
+# Push-on-block digests are coalesced to at most one per this many seconds
+# (unless a block is marked critical).
+notify_batch_seconds = 300
+
+[notifier]
+# "noop" (log only) or "whatsapp".
+kind = "noop"
+# Command template for the whatsapp adapter; {message} is substituted.
+# Uses the agent-comms WhatsApp backend (self-notify).
+whatsapp_command = 'agent-comms whatsapp send --self --message "{message}"'
+
+[paths]
+# Where Claude Code writes session transcripts (watched for backfill/catch-all).
+claude_projects_root = "~/.claude/projects"
+# SQLite journal so daemon restarts recover session state.
+journal_path = "~/.argus/journal.sqlite3"
+# Claude Code settings file that `argus install-hooks` merges the hook set into.
+settings_path = "~/.claude/settings.json"
