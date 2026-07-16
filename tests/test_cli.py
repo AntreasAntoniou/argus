@@ -6,9 +6,8 @@ tests MUST pass. install_hooks / build_hook_block are stubs → xfail.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-
-import pytest
 
 from argus.cli import (
     HOOK_EVENTS,
@@ -45,7 +44,6 @@ def test_parser_defaults_run_command() -> None:
     assert args.command is None  # dispatches to daemon serve
 
 
-@pytest.mark.xfail(reason="stub", strict=False)
 def test_install_hooks_is_idempotent(tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
     settings.write_text("{}")
@@ -55,7 +53,56 @@ def test_install_hooks_is_idempotent(tmp_path: Path) -> None:
     assert (tmp_path / "settings.json.bak").exists()
 
 
-@pytest.mark.xfail(reason="stub", strict=False)
 def test_build_hook_block_covers_all_events() -> None:
     block = build_hook_block(8787)
     assert isinstance(block, dict) and block
+    # Every one of the eight lifecycle hooks is keyed, each POSTing to /hook.
+    assert {e.value for e in HOOK_EVENTS} == set(block)
+    for groups in block.values():
+        command = groups[0]["hooks"][0]["command"]
+        assert "127.0.0.1:8787/hook" in command
+
+
+def test_install_hooks_preserves_user_hooks_and_adds_argus_once(
+    tmp_path: Path,
+) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "model": "opus",
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [{"type": "command", "command": "my-linter"}],
+                        }
+                    ]
+                },
+            }
+        )
+    )
+    merged = install_hooks(settings, port=8787, dry_run=False, backup=True)
+
+    # Unrelated top-level settings survive untouched.
+    assert merged["model"] == "opus"
+    # The user's own PreToolUse hook is preserved alongside the argus one.
+    commands = [
+        h["command"]
+        for group in merged["hooks"]["PreToolUse"]
+        for h in group["hooks"]
+    ]
+    assert "my-linter" in commands
+    assert any("/hook" in c for c in commands)
+
+    # Re-running does not add a second argus entry to PreToolUse.
+    again = install_hooks(settings, port=8787, dry_run=False, backup=True)
+    assert again == merged
+
+
+def test_install_hooks_dry_run_does_not_write(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    result = install_hooks(settings, port=8787, dry_run=True, backup=True)
+    assert isinstance(result, dict) and result["hooks"]
+    assert not settings.exists()  # dry-run never touches disk
+    assert not (tmp_path / "settings.json.bak").exists()

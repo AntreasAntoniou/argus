@@ -9,6 +9,7 @@ set into a Claude Code settings path, with backup and ``--dry-run``.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from pathlib import Path
 
@@ -61,10 +62,18 @@ def build_hook_block(port: int) -> dict[str, object]:
         port: Local daemon port for the hook command.
 
     Returns:
-        A dict suitable for merging under the top-level ``"hooks"`` key.
+        A dict suitable for merging under the top-level ``"hooks"`` key: each of
+        the eight event names maps to a single matcher group invoking
+        :func:`hook_command`.
     """
 
-    raise NotImplementedError("Build the per-event hooks settings fragment")
+    command = hook_command(port)
+    return {
+        event.value: [
+            {"matcher": "*", "hooks": [{"type": "command", "command": command}]}
+        ]
+        for event in HOOK_EVENTS
+    }
 
 
 def install_hooks(
@@ -93,7 +102,34 @@ def install_hooks(
         The merged settings dict (whether or not it was written).
     """
 
-    raise NotImplementedError("Load, idempotent deep-merge, backup, write (unless dry)")
+    settings_path = Path(settings_path)
+    existing: dict[str, object] = {}
+    if settings_path.exists():
+        text = settings_path.read_text().strip()
+        existing = json.loads(text) if text else {}
+
+    merged = copy.deepcopy(existing)
+    hooks = merged.setdefault("hooks", {})
+    command = hook_command(port)
+
+    for event, groups in build_hook_block(port).items():
+        event_groups = hooks.setdefault(event, [])
+        already_present = any(
+            isinstance(group, dict)
+            and any(h.get("command") == command for h in group.get("hooks", []))
+            for group in event_groups
+        )
+        if not already_present:
+            event_groups.extend(groups)
+
+    if not dry_run:
+        if backup and settings_path.exists():
+            backup_path = settings_path.with_name(settings_path.name + ".bak")
+            backup_path.write_text(settings_path.read_text())
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(merged, indent=2) + "\n")
+
+    return merged
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -172,9 +208,13 @@ def daemon_main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2))
         return 0
 
-    raise NotImplementedError(
-        "uvicorn.run(create_app(config), port=config.daemon_port)"
-    )
+    import uvicorn
+
+    from argus.daemon import create_app
+
+    port = getattr(args, "port", None) or config.daemon_port
+    uvicorn.run(create_app(config), host="127.0.0.1", port=port)
+    return 0
 
 
 def tui_main(argv: list[str] | None = None) -> int:
@@ -193,5 +233,9 @@ def tui_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="argus", description="Argus TUI board.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     args = parser.parse_args(argv)
-    _config = load_config(args.config)
-    raise NotImplementedError("ArgusApp(_config).run()")
+    config = load_config(args.config)
+
+    from argus.tui import ArgusApp
+
+    ArgusApp(config).run()
+    return 0
