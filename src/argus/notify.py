@@ -11,6 +11,9 @@ format is a count plus a per-agent question line.
 from __future__ import annotations
 
 import logging
+import shlex
+import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
@@ -82,28 +85,51 @@ class NoopNotifier:
         """
 
         self.sent.append(digest)
-        logger.info("[noop-notify]%s %s", " CRITICAL" if digest.critical else "",
-                    digest.render().replace("\n", " | "))
+        logger.info(
+            "[noop-notify]%s %s",
+            " CRITICAL" if digest.critical else "",
+            digest.render().replace("\n", " | "),
+        )
         return True
 
 
-class WhatsAppNotifier:
-    """Notifier that shells out to a configurable command template.
+def _run_argv(argv: list[str]) -> int:
+    """Run ``argv`` without a shell, returning its exit code.
 
-    STUB. Implementers: substitute the rendered digest into
-    :attr:`argus.config.NotifierConfig.whatsapp_command` (token ``{message}``)
-    and run it via ``subprocess``. Delivery failures are logged and return
-    ``False`` — never raise.
+    The default runner for :class:`WhatsAppNotifier`; output is captured so the
+    daemon's own stdout/stderr stay clean, and no shell means the digest text
+    (which spans multiple lines) can never be re-parsed as extra commands. Split
+    out so tests can inject a fake.
     """
 
-    def __init__(self, config: NotifierConfig) -> None:
+    return subprocess.run(argv, check=False, capture_output=True).returncode
+
+
+class WhatsAppNotifier:
+    """Notifier that runs a configurable command template.
+
+    The template (:attr:`argus.config.NotifierConfig.whatsapp_command`) is split
+    into argv with :func:`shlex.split`, then the ``{message}`` token in each
+    argument is replaced with the rendered digest and the command is run without
+    a shell. Delivery failures are logged and return ``False`` — never raise.
+    """
+
+    def __init__(
+        self,
+        config: NotifierConfig,
+        *,
+        runner: Callable[[list[str]], int] = _run_argv,
+    ) -> None:
         """Store the command template from config.
 
         Args:
             config: Notifier config carrying ``whatsapp_command``.
+            runner: Injectable command runner (argv -> exit code); defaults to a
+                captured, shell-free subprocess invocation.
         """
 
-        raise NotImplementedError("Store config.whatsapp_command template")
+        self.command = config.whatsapp_command
+        self._runner = runner
 
     def send(self, digest: Digest) -> bool:
         """Render the digest and run the configured command.
@@ -112,10 +138,22 @@ class WhatsAppNotifier:
             digest: The digest to push.
 
         Returns:
-            ``True`` if the command exited 0, else ``False``.
+            ``True`` if the command exited 0, else ``False``. Never raises.
         """
 
-        raise NotImplementedError("Substitute {message}, subprocess.run the template")
+        message = digest.render()
+        try:
+            argv = [
+                arg.replace("{message}", message) for arg in shlex.split(self.command)
+            ]
+            code = self._runner(argv)
+        except Exception:
+            logger.exception("[whatsapp-notify] command failed to run")
+            return False
+        if code != 0:
+            logger.warning("[whatsapp-notify] command exited %d", code)
+            return False
+        return True
 
 
 @dataclass(slots=True)
@@ -141,11 +179,14 @@ class NotifyBatcher:
     def observe_blocked(self, session: SessionSnapshot) -> None:
         """Register a newly-blocked session for the next digest.
 
+        Keyed by ``session_id`` so a still-blocked agent observed on successive
+        cycles is coalesced into a single digest line rather than re-announced.
+
         Args:
             session: A session that has entered ``BLOCKED``.
         """
 
-        raise NotImplementedError("Add to _pending keyed by session_id (dedup)")
+        self._pending[session.session_id] = session
 
     def maybe_flush(
         self, *, now: datetime | None = None, critical: bool = False
@@ -160,5 +201,17 @@ class NotifyBatcher:
             ``True`` if a digest was pushed, else ``False``.
         """
 
-        _ = now or utcnow()
-        raise NotImplementedError("Throttle-check, build Digest, notifier.send, reset")
+        if not self._pending:
+            return False
+        now = now or utcnow()
+        elapsed = (
+            self.last_sent_at is None
+            or (now - self.last_sent_at).total_seconds() >= self.batch_seconds
+        )
+        if not (critical or elapsed):
+            return False
+        digest = Digest(blocked=list(self._pending.values()), critical=critical)
+        self.notifier.send(digest)
+        self.last_sent_at = now
+        self._pending.clear()
+        return True
