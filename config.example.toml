@@ -14,10 +14,15 @@ peers = []
 daemon_port = 8787
 
 [thresholds]
-# A session with a live tmux pane but no JSONL activity for this long, and not
-# already 'done', is flagged DEAD.
-dead_after_seconds = 15
+# A non-blocked session silent (no JSONL/hook activity) for longer than this,
+# with no matched live tmux pane, is marked DEAD. Generous so a session you
+# briefly stepped away from is not falsely buried. BLOCKED sessions (waiting on
+# you) are never aged out.
+dead_after_seconds = 600
+# Soft "idle" hint window (informational).
 jsonl_silent_seconds = 45
+# How often the liveness sweep runs (decoupled from the death window).
+poll_interval_seconds = 5
 # Push-on-block digests are coalesced to at most one per this many seconds
 # (unless a block is marked critical).
 notify_batch_seconds = 300

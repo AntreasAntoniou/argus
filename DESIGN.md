@@ -7,6 +7,21 @@
 Status: locked 2026-07-15 with Antreas via multiple-choice design review.
 This file is the canonical spec. Deviations require an explicit note here.
 
+## Amendments
+
+- **2026-07-16 — dead-detection is silence-based, not pane-based.** The original
+  state machine said "dead: tmux pane gone or JSONL silent past threshold." In
+  practice a tmux pane cannot be reliably mapped to a Claude session (session ids
+  are UUIDs; panes are named windows), so "pane gone → dead" marked *every*
+  session dead, including live ones. Corrected model: **death is inferred from
+  silence** past `dead_after_seconds` (default 600s); a matched live pane only
+  keeps-alive, never kills; **BLOCKED sessions are never aged out** (waiting on
+  the human is the most-alive state); and **DEAD is not sticky** — it is an
+  inference and resurrects on any new activity (DONE resumes on restart or a new
+  user turn). The board's quiet bucket (idle/done/dead) is collapsed so finished
+  sessions can't bury the live ones. Startup backfill is bounded to recent
+  activity (5m) and yields to the loop.
+
 ## The problem
 
 Agents work in bursts — 30–40s of thinking, a flurry of writes, then waiting.
