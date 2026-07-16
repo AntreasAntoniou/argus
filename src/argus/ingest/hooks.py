@@ -1,24 +1,27 @@
 """Hook receiver — FastAPI router turning Claude Code hook POSTs into Events.
 
-STUB — precise typed contract only. Implementers: mount :data:`router` on the
-daemon app. It exposes ``POST /hook`` accepting the JSON body the async hook
-pack sends for each of the eight lifecycle events
-(:class:`argus.models.HookEvent`). Parse the body into an
-:class:`argus.models.Event` and hand it to the store (dependency-injected).
+Mount :data:`router` on the daemon app. It exposes ``POST /hook`` accepting the
+JSON body the async hook pack sends for each of the eight lifecycle events
+(:class:`argus.models.HookEvent`). The body is parsed into an
+:class:`argus.models.Event` and handed to the :class:`~argus.store.SessionStore`
+pulled off ``request.app.state`` (the daemon wires it there at app-factory
+time, so this module stays a leaf and never imports the store).
 
-The hook body carries at least ``hook_event_name``, ``session_id``, ``cwd``,
-and — for tool hooks — ``tool_name`` and ``tool_input``. ``Notification`` bodies
-carry the question/permission text. Respond ``2xx`` fast; the hooks are async
-and must never block a session.
+The hook body carries at least ``hook_event_name`` and ``session_id``, plus
+``cwd`` and — for tool hooks — ``tool_name`` and ``tool_input``. ``Notification``
+bodies carry the question/permission text (kept in ``raw`` for the reducer to
+lift into ``BLOCKED``). Handlers respond ``2xx`` fast; the hooks are async and
+must never block a session.
 """
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
-from argus.models import Event
+from argus.models import Event, utcnow
 
 # Mounted by argus.daemon.create_app(). Route handlers pull the SessionStore
 # off app.state (wired at app-factory time).
@@ -41,16 +44,38 @@ def parse_hook_body(body: dict[str, Any], *, machine: str) -> Event:
             absent.
     """
 
-    raise NotImplementedError("Map hook body fields onto an Event")
+    hook_event_name = body["hook_event_name"]
+    session_id = body["session_id"]
+    return Event(
+        session_id=session_id,
+        machine=machine,
+        hook_event_name=hook_event_name,
+        ts=utcnow(),
+        cwd=body.get("cwd"),
+        tool_name=body.get("tool_name"),
+        tool_input=body.get("tool_input"),
+        raw=body,
+    )
 
 
 @router.post("/hook")
-async def receive_hook(body: dict[str, Any]) -> dict[str, str]:
+async def receive_hook(body: dict[str, Any], request: Request) -> dict[str, str]:
     """Receive one hook event, journal it, broadcast the resulting snapshot.
 
     Parses the body via :func:`parse_hook_body`, appends it to the
-    ``SessionStore`` on ``app.state``, and triggers an SSE broadcast of the
+    ``SessionStore`` on ``app.state.store``, and — if the daemon has installed a
+    broadcaster on ``app.state.broadcast`` — triggers an SSE broadcast of the
     updated snapshot. Returns quickly with ``{"status": "ok"}``.
     """
 
-    raise NotImplementedError("Parse body, store.append, broadcast; return ok")
+    store = request.app.state.store
+    event = parse_hook_body(body, machine=store.machine)
+    snapshot = store.append(event)
+
+    broadcast = getattr(request.app.state, "broadcast", None)
+    if broadcast is not None:
+        result = broadcast(snapshot)
+        if inspect.isawaitable(result):
+            await result
+
+    return {"status": "ok"}
