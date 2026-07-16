@@ -230,7 +230,11 @@ class ArgusApp(App[None]):
             )
         )
         working.update(self._bucket_text("── working", buckets.working, selected_id))
-        quiet.update(self._bucket_text("── quiet", buckets.quiet, selected_id))
+        # The quiet bucket (idle/done/dead) is context, not signal — collapse it
+        # so a day's worth of finished sessions can never bury the live board.
+        quiet.update(
+            self._bucket_text("── quiet", buckets.quiet, selected_id, limit=6)
+        )
         self.sub_title = f"{len(self._fleet.all_sessions())} eyes open"
         self._update_drilldown(selected)
 
@@ -241,18 +245,30 @@ class ArgusApp(App[None]):
         selected_id: str | None,
         *,
         blocked: bool = False,
+        limit: int | None = None,
     ) -> str:
-        """Render one bucket as a titled block of card rows."""
+        """Render one bucket as a titled block of card rows.
+
+        Rows are ``marker id  cwd-basename  label`` — the working directory's
+        leaf is far more identifying at a glance than a bare session UUID. When
+        ``limit`` is set, only the first ``limit`` rows are shown followed by a
+        "… and N more" line, so low-signal buckets stay compact.
+        """
 
         lines = [f"{title} ({len(sessions)})"]
         if not sessions:
             lines.append("  —")
-        for session in sessions:
+        shown = sessions if limit is None else sessions[:limit]
+        for session in shown:
             marker = "▸ " if session.session_id == selected_id else "  "
-            row = f"{marker}{session.session_id}  {session.machine}  {session.label()}"
+            where = Path(session.cwd).name if session.cwd else session.machine
+            row = f"{marker}{session.session_id[:12]:12}  {where}  {session.label()}"
             if blocked and session.question:
                 row += f'  "{session.question}"'
             lines.append(row)
+        hidden = len(sessions) - len(shown)
+        if hidden > 0:
+            lines.append(f"  … and {hidden} more")
         return "\n".join(lines)
 
     def _update_drilldown(self, session: SessionSnapshot | None) -> None:

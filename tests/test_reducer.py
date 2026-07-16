@@ -44,11 +44,13 @@ def test_session_end_is_done() -> None:
     assert s.status is SessionStatus.DONE
 
 
-def test_is_dead_when_pane_gone_and_not_done() -> None:
+def test_recent_session_without_pane_is_alive() -> None:
+    # No matched tmux pane must NOT kill a freshly-active session: pane↔session
+    # matching is unreliable, so recent activity wins.
     snap = SessionSnapshot(
         session_id="s1", machine="mac", status=SessionStatus.THINKING
     )
-    assert is_dead(
+    assert not is_dead(
         snap,
         now=utcnow(),
         thresholds=Thresholds(),
@@ -57,18 +59,49 @@ def test_is_dead_when_pane_gone_and_not_done() -> None:
     )
 
 
-def test_is_dead_when_jsonl_silent_past_threshold() -> None:
+def test_is_dead_when_silent_past_death_window_and_no_pane() -> None:
     snap = SessionSnapshot(
         session_id="s1", machine="mac", status=SessionStatus.THINKING
     )
     now = utcnow()
-    silent_since = now - timedelta(seconds=120)
+    silent_since = now - timedelta(seconds=1200)  # past dead_after_seconds (600)
     assert is_dead(
         snap,
         now=now,
-        thresholds=Thresholds(jsonl_silent_seconds=45),
-        pane_alive=True,
+        thresholds=Thresholds(dead_after_seconds=600),
+        pane_alive=False,
         last_jsonl_activity=silent_since,
+    )
+
+
+def test_blocked_session_is_never_aged_out() -> None:
+    # A blocked session is intentionally silent while it waits on the human; it
+    # must survive any silence/pane-absence — losing it drops the whole point.
+    snap = SessionSnapshot(
+        session_id="s1", machine="mac", status=SessionStatus.BLOCKED,
+        question="Run migration?",
+    )
+    now = utcnow()
+    assert not is_dead(
+        snap,
+        now=now,
+        thresholds=Thresholds(dead_after_seconds=600),
+        pane_alive=False,
+        last_jsonl_activity=now - timedelta(hours=3),
+    )
+
+
+def test_live_pane_keeps_session_alive() -> None:
+    snap = SessionSnapshot(
+        session_id="s1", machine="mac", status=SessionStatus.THINKING
+    )
+    now = utcnow()
+    assert not is_dead(
+        snap,
+        now=now,
+        thresholds=Thresholds(dead_after_seconds=600),
+        pane_alive=True,
+        last_jsonl_activity=now - timedelta(seconds=1200),
     )
 
 
@@ -193,12 +226,25 @@ def test_is_dead_pane_alive_and_recent_jsonl_is_live() -> None:
     )
 
 
-def test_dead_snapshot_is_sticky_except_session_start() -> None:
+def test_dead_snapshot_resurrects_on_activity() -> None:
+    # DEAD is inferred from silence; a fresh event disproves it and the session
+    # must come back to life (not stay a tombstone until a full restart).
     s = SessionSnapshot(session_id="s1", machine="mac", status=SessionStatus.DEAD)
     s = reduce(s, _ev(HookEvent.USER_PROMPT_SUBMIT))
-    assert s.status is SessionStatus.DEAD
-    s = reduce(s, _ev(HookEvent.SESSION_START))
-    assert s.status is SessionStatus.STARTING
+    assert s.status is SessionStatus.THINKING
+    s = SessionSnapshot(session_id="s2", machine="mac", status=SessionStatus.DEAD)
+    s = reduce(s, _ev(HookEvent.PRE_TOOL_USE))
+    assert s.status is SessionStatus.TOOL
+
+
+def test_done_snapshot_resumes_only_on_restart_or_prompt() -> None:
+    # DONE is an explicit end (SessionEnd): a stray tool event does NOT revive it,
+    # but the human starting a new turn (or a restart) does.
+    s = SessionSnapshot(session_id="s1", machine="mac", status=SessionStatus.DONE)
+    s = reduce(s, _ev(HookEvent.PRE_TOOL_USE))
+    assert s.status is SessionStatus.DONE
+    s = reduce(s, _ev(HookEvent.USER_PROMPT_SUBMIT))
+    assert s.status is SessionStatus.THINKING
 
 
 def test_synthetic_event_preserves_tool_name_invariant() -> None:

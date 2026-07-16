@@ -285,13 +285,15 @@ async def _run_tmux_poll(app: FastAPI) -> None:
 
     config: ArgusConfig = app.state.config
     store: SessionStore = app.state.store
-    interval = max(1, config.thresholds.dead_after_seconds)
+    interval = max(1, config.thresholds.poll_interval_seconds)
     while True:
         await asyncio.sleep(interval)
         try:
             panes = tmux.list_panes()
         except FileNotFoundError:
-            return  # no tmux on this host — nothing to poll
+            # No tmux on this host — still sweep for dead-by-silence with no
+            # pane evidence, so headless machines age out silent sessions too.
+            panes = []
         except Exception:  # noqa: BLE001 — a bad poll must not kill the loop
             continue
         alive = {p.session_name for p in panes} | {p.title for p in panes}

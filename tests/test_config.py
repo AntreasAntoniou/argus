@@ -21,7 +21,8 @@ def test_missing_file_returns_defaults(tmp_path: Path) -> None:
     assert cfg.daemon_port == 8787
     assert cfg.notifier.kind is NotifierKind.NOOP
     assert cfg.thresholds.notify_batch_seconds == 300
-    assert cfg.thresholds.dead_after_seconds == 15
+    assert cfg.thresholds.dead_after_seconds == 600
+    assert cfg.thresholds.poll_interval_seconds == 5
     assert cfg.paths.claude_projects_root == Path.home() / ".claude" / "projects"
 
 

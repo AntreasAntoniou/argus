@@ -26,9 +26,6 @@ from datetime import datetime, timedelta
 from argus.config import Thresholds
 from argus.models import Event, HookEvent, SessionSnapshot, SessionStatus
 
-# Terminal states never regress except on an explicit restart (SessionStart).
-_TERMINAL = (SessionStatus.DONE, SessionStatus.DEAD)
-
 # Notification payload keys, most-specific first, that may carry the prompt.
 _QUESTION_KEYS = ("notification", "message", "prompt", "question", "body")
 
@@ -71,8 +68,13 @@ def reduce(snapshot: SessionSnapshot | None, event: Event) -> SessionSnapshot:
     if event.cwd is not None:
         snapshot.cwd = event.cwd
 
-    # A terminal session only advances on an explicit restart.
-    if snapshot.status in _TERMINAL and not is_restart:
+    # DEAD is only an INFERENCE from silence — any fresh observation disproves it,
+    # so a dead session resurrects on any event (fall through to re-derive status).
+    # DONE is an explicit end (SessionEnd); it resumes only on a restart or a new
+    # user turn (the human continued the conversation).
+    if snapshot.status is SessionStatus.DONE and not (
+        is_restart or hook == HookEvent.USER_PROMPT_SUBMIT
+    ):
         return snapshot
 
     if is_restart:
@@ -164,12 +166,21 @@ def is_dead(
     if snapshot.status is SessionStatus.DONE:
         return False
 
-    if not pane_alive:
+    # A BLOCKED session is intentionally silent — it is waiting on the human, the
+    # single most-alive state on the board. Never let silence or a missing pane
+    # kill it; it leaves BLOCKED only via real activity or an explicit Stop.
+    if snapshot.status is SessionStatus.BLOCKED:
+        return False
+
+    # A matched live tmux pane is positive proof of life.
+    if pane_alive:
+        return False
+
+    # Otherwise death is inferred from SILENCE, never from pane-absence alone:
+    # Claude session ids are UUIDs while tmux panes are named, so the pane↔session
+    # match is unreliable and a recently-active session routinely has no matched
+    # pane. Only a session silent past the death window is really gone.
+    if last_jsonl_activity is None:
         return True
-
-    if last_jsonl_activity is not None:
-        silent_for = now - last_jsonl_activity
-        if silent_for > timedelta(seconds=thresholds.jsonl_silent_seconds):
-            return True
-
-    return False
+    silent_for = now - last_jsonl_activity
+    return silent_for > timedelta(seconds=thresholds.dead_after_seconds)

@@ -36,8 +36,8 @@ from argus.models import Event, HookEvent, utcnow
 # Backfill defaults: Argus tracks LIVE/recent sessions, not full history. A real
 # ~/.claude/projects can be gigabytes across thousands of files; reading all of it
 # synchronously on the event loop blocks the daemon from ever becoming ready.
-DEFAULT_BACKFILL_WINDOW_SECONDS = 7_200  # only backfill files touched in the last 2h
-DEFAULT_BACKFILL_MAX_FILES = 200         # ...capped at the N most-recently-modified
+DEFAULT_BACKFILL_WINDOW_SECONDS = 300  # only backfill files touched in the last 5m
+DEFAULT_BACKFILL_MAX_FILES = 200       # ...capped at the N most-recently-modified
 
 # Line ``type`` values with no state relevance — skipped outright.
 _SKIP_TYPES = frozenset({"mode", "permission-mode", "file-history-snapshot"})

@@ -80,42 +80,49 @@ def test_peer_state_merges_remote_machine(tmp_path: Path) -> None:
         assert state["machines"]["astrape"][0]["session_id"] == "r1"
 
 
-def test_mark_dead_sessions_kills_vanished_pane(tmp_path: Path) -> None:
+def test_mark_dead_sessions_kills_silent_paneless_session(tmp_path: Path) -> None:
+    # Death = silent past the window with no matched pane. A recently-active
+    # session with no pane must survive (pane matching is unreliable).
     store = SessionStore(tmp_path / "j.sqlite3", "testbox")
     now = utcnow()
     store._snapshots["gone"] = SessionSnapshot(
-        session_id="gone", machine="testbox", status=SessionStatus.THINKING
+        session_id="gone",
+        machine="testbox",
+        status=SessionStatus.THINKING,
+        updated_at=now - timedelta(seconds=1200),  # past dead_after_seconds
     )
     store._snapshots["live"] = SessionSnapshot(
         session_id="live",
         machine="testbox",
         status=SessionStatus.THINKING,
-        updated_at=now,
+        updated_at=now,  # fresh, no pane, must stay alive
     )
     changed = mark_dead_sessions(
         store,
         now=now,
-        thresholds=Thresholds(),
-        alive_session_ids={"live"},
+        thresholds=Thresholds(dead_after_seconds=600),
+        alive_session_ids=set(),  # nothing maps to a pane
     )
     assert [s.session_id for s in changed] == ["gone"]
     assert store.get("gone").status is SessionStatus.DEAD
     assert store.get("live").status is SessionStatus.THINKING
 
 
-def test_mark_dead_sessions_respects_jsonl_silence(tmp_path: Path) -> None:
+def test_mark_dead_sessions_keeps_live_pane_alive(tmp_path: Path) -> None:
+    # A matched live pane keeps a long-silent session alive.
     store = SessionStore(tmp_path / "j.sqlite3", "testbox")
     now = utcnow()
-    store._snapshots["stale"] = SessionSnapshot(
-        session_id="stale",
+    store._snapshots["panebound"] = SessionSnapshot(
+        session_id="panebound",
         machine="testbox",
         status=SessionStatus.THINKING,
-        updated_at=now - timedelta(seconds=999),
+        updated_at=now - timedelta(seconds=1200),
     )
     changed = mark_dead_sessions(
         store,
         now=now,
-        thresholds=Thresholds(jsonl_silent_seconds=45),
-        alive_session_ids={"stale"},  # pane alive, but JSONL long silent
+        thresholds=Thresholds(dead_after_seconds=600),
+        alive_session_ids={"panebound"},
     )
-    assert [s.session_id for s in changed] == ["stale"]
+    assert changed == []
+    assert store.get("panebound").status is SessionStatus.THINKING

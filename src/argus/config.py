@@ -32,16 +32,22 @@ class Thresholds:
     """Timing thresholds for liveness and notification batching.
 
     Attributes:
-        dead_after_seconds: A session with no observed activity for longer than
-            this (while not ``done``) and no live tmux pane is marked ``dead``.
-        jsonl_silent_seconds: JSONL transcript silent longer than this (while not
-            ``done``) contributes to dead-detection.
+        dead_after_seconds: A non-blocked session silent (no JSONL/hook activity)
+            for longer than this, with no matched live tmux pane, is marked
+            ``dead``. Generous by default so a session you briefly stepped away
+            from is not falsely buried; BLOCKED sessions are never aged out.
+        jsonl_silent_seconds: Soft "idle" hint window (informational); dead
+            detection itself keys off ``dead_after_seconds``.
+        poll_interval_seconds: How often the tmux/liveness sweep runs (decoupled
+            from the death window so death can be generous while the sweep stays
+            responsive).
         notify_batch_seconds: Minimum spacing between non-critical WhatsApp
             digests. Defaults to 300 (≤1 msg / 5 min per decision #7).
     """
 
-    dead_after_seconds: int = 15
+    dead_after_seconds: int = 600
     jsonl_silent_seconds: int = 45
+    poll_interval_seconds: int = 5
     notify_batch_seconds: int = 300
 
 
@@ -122,6 +128,9 @@ def _coerce_thresholds(data: dict[str, Any]) -> Thresholds:
         ),
         jsonl_silent_seconds=int(
             data.get("jsonl_silent_seconds", defaults.jsonl_silent_seconds)
+        ),
+        poll_interval_seconds=int(
+            data.get("poll_interval_seconds", defaults.poll_interval_seconds)
         ),
         notify_batch_seconds=int(
             data.get("notify_batch_seconds", defaults.notify_batch_seconds)
