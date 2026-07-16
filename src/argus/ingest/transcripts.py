@@ -21,7 +21,9 @@ JSONL schema (learned from real transcripts):
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +32,12 @@ from typing import Any
 from watchfiles import awatch
 
 from argus.models import Event, HookEvent, utcnow
+
+# Backfill defaults: Argus tracks LIVE/recent sessions, not full history. A real
+# ~/.claude/projects can be gigabytes across thousands of files; reading all of it
+# synchronously on the event loop blocks the daemon from ever becoming ready.
+DEFAULT_BACKFILL_WINDOW_SECONDS = 7_200  # only backfill files touched in the last 2h
+DEFAULT_BACKFILL_MAX_FILES = 200         # ...capped at the N most-recently-modified
 
 # Line ``type`` values with no state relevance — skipped outright.
 _SKIP_TYPES = frozenset({"mode", "permission-mode", "file-history-snapshot"})
@@ -214,18 +222,28 @@ def _read_new_events(
 
 
 async def watch_transcripts(
-    roots: Iterable[Path], *, machine: str
+    roots: Iterable[Path],
+    *,
+    machine: str,
+    backfill_window_seconds: float = DEFAULT_BACKFILL_WINDOW_SECONDS,
+    backfill_max_files: int = DEFAULT_BACKFILL_MAX_FILES,
 ) -> AsyncIterator[Event]:
     """Async-iterate Events as JSONL files under ``roots`` grow.
 
-    Backfills every existing ``*.jsonl`` under ``roots`` once, then uses
-    ``watchfiles.awatch`` to detect appends and yields newly-parsed Events.
-    Tracks per-file byte offsets so only lines added since the last read parse.
+    On startup, backfills only *recent* transcripts — files modified within
+    ``backfill_window_seconds``, capped at the ``backfill_max_files`` most-recent —
+    yielding control to the event loop between files so the daemon becomes ready
+    promptly even when ``roots`` holds gigabytes of history. Older files are NOT
+    replayed, but their current size is recorded as the read offset so that any
+    *future* append to them is still picked up by ``watchfiles.awatch``. Set
+    ``backfill_window_seconds`` to a huge value to replay everything.
 
     Args:
         roots: Directories to watch recursively (typically
             ``[config.paths.claude_projects_root]``).
         machine: Hostname to stamp onto emitted events.
+        backfill_window_seconds: Only replay files modified this recently.
+        backfill_max_files: Hard cap on how many recent files to replay.
 
     Yields:
         Newly-observed :class:`Event` objects.
@@ -235,11 +253,35 @@ async def watch_transcripts(
     existing = [r for r in root_paths if r.exists()]
     offsets: dict[Path, int] = {}
 
-    # Backfill: emit everything already on disk, priming per-file offsets.
+    # Gather every transcript with its mtime, newest first.
+    all_files: list[tuple[float, Path]] = []
     for root in existing:
-        for path in sorted(root.rglob("*.jsonl")):
-            for event in _read_new_events(path, offsets, machine):
-                yield event
+        for path in root.rglob("*.jsonl"):
+            try:
+                all_files.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+    all_files.sort(key=lambda item: item[0], reverse=True)
+
+    cutoff = time.time() - backfill_window_seconds
+    recent = [p for mtime, p in all_files if mtime >= cutoff][:backfill_max_files]
+    recent_set = set(recent)
+
+    # Skip old files but prime their offset to current size, so we only ever emit
+    # NEW appends to them — never replay their history on the next change.
+    for _mtime, path in all_files:
+        if path not in recent_set:
+            try:
+                offsets[path] = path.stat().st_size
+            except OSError:
+                continue
+
+    # Backfill only the recent slice, yielding to the loop between files so the
+    # daemon can serve requests / complete startup instead of blocking.
+    for path in sorted(recent):
+        for event in _read_new_events(path, offsets, machine):
+            yield event
+        await asyncio.sleep(0)
 
     if not existing:
         return
