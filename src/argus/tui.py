@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, Static
 
 from argus.config import ArgusConfig
+from argus.correlate import correlate
 from argus.diffs import DiffCache
 from argus.ingest import tmux
 from argus.models import FleetState, SessionSnapshot, SessionStatus, utcnow
@@ -100,8 +100,8 @@ class ArgusApp(App[None]):
     """
 
     BINDINGS = [
-        ("j", "cursor_down", "Down"),
-        ("k", "cursor_up", "Up"),
+        ("down,j", "cursor_down", "Down"),
+        ("up,k", "cursor_up", "Up"),
         ("y", "reply_yes", "Yes"),
         ("n", "reply_no", "No"),
         ("enter", "attach", "Attach"),
@@ -392,20 +392,26 @@ class ArgusApp(App[None]):
         return f"ssh {session.machine} -t tmux attach -t {session.session_id}"
 
     def _attach_local(self, session: SessionSnapshot) -> None:
-        """Switch this tmux client to the session's local pane."""
+        """Switch this tmux client to the session's live pane.
+
+        Uses the same process-argv/cwd correlation the daemon uses — a Claude
+        session id is a UUID that never equals a tmux pane name, so matching on
+        ``session_name``/``title`` (the old approach) always missed.
+        """
 
         try:
             panes = tmux.list_panes()
         except FileNotFoundError:
             self.notify("tmux not available", severity="error")
             return
-        target = next(
-            (p for p in panes if p.session_name == session.session_id), None
-        ) or next((p for p in panes if session.session_id in p.title), None)
-        if target is None:
-            self.notify("no tmux pane for this session", severity="warning")
+        mapping = correlate(
+            panes, projects_root=self._config.paths.claude_projects_root
+        )
+        pane = mapping.get(session.session_id)
+        if pane is None:
+            self.notify("no live tmux pane for this session", severity="warning")
             return
         try:
-            subprocess.run(["tmux", "switch-client", "-t", target.pane_id], check=False)
+            tmux.focus_pane(pane.pane_id)
         except OSError as exc:
             self.notify(f"attach failed: {exc}", severity="error")

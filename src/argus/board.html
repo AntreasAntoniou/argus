@@ -38,9 +38,23 @@
   .sechead .n { color: var(--ink); }
   .row { display: grid; grid-template-columns: 66px 92px 1fr auto;
     gap: 12px; align-items: center; padding: 9px 12px; border: 1px solid var(--line);
-    border-radius: 8px; background: var(--panel); margin-bottom: 6px; }
+    border-radius: 8px; background: var(--panel); margin-bottom: 6px;
+    cursor: pointer; transition: border-color .12s, background .12s; }
+  .row:hover { border-color: var(--work); background: #161c28; }
   .row.blocked { border-color: var(--need-line); background: var(--need-bg); }
+  .row.blocked:hover { border-color: var(--need); }
   .row.quiet { opacity: .58; }
+  .row.quiet:hover { opacity: .85; }
+  .row .go { color: var(--faint); font-size: 15px; }
+  .row:hover .go { color: var(--work); }
+  #toast { position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
+    background: #1b2230; border: 1px solid var(--line); color: var(--ink);
+    padding: 9px 16px; border-radius: 8px; font-size: 13px; opacity: 0;
+    transition: opacity .2s; pointer-events: none; max-width: 90vw;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 9; }
+  #toast.show { opacity: 1; }
+  #toast.hint { border-color: var(--work); }
+  #toast code { color: var(--tool); }
   .mtag { font-size: 11px; color: var(--dim); text-align: center;
     border: 1px solid var(--line); border-radius: 6px; padding: 2px 0; }
   .pill { font-size: 11px; font-weight: 700; text-align: center; padding: 2px 0;
@@ -90,7 +104,8 @@
     <div id="list-quiet"></div>
   </section>
 
-  <footer id="foot">argus board · polling every 2s</footer>
+  <div id="toast"></div>
+  <footer id="foot">argus board · polling every 2s · click a row to jump into that session</footer>
 
 <script>
 const TOKEN = "__ARGUS_TOKEN__";
@@ -131,7 +146,7 @@ function rowHtml(s) {
   if (s.last_tool && st !== "tool") metaBits.push("↳" + esc(s.last_tool));
   const q = st === "blocked" && s.question
     ? `<div class="q">▸ ${esc(s.question)}</div>` : "";
-  return `<div class="${cls}">
+  return `<div class="${cls}" data-sid="${esc(s.session_id)}" data-machine="${esc(s.machine)}" title="click to jump into this session">
     <div class="mtag">${esc(s.machine)}</div>
     <div class="pill ${esc(st)}">${label}</div>
     <div class="mid">
@@ -139,9 +154,40 @@ function rowHtml(s) {
       <div class="meta">${metaBits.join('<span class="sep">·</span>')}</div>
       ${q}
     </div>
-    <div class="right"><span class="age">${fmtAge(s.updated_at)}</span></div>
+    <div class="right"><span class="age">${fmtAge(s.updated_at)}</span> <span class="go">›</span></div>
   </div>`;
 }
+
+let toastTimer;
+function toast(msg, isHint) {
+  const t = $("toast");
+  t.innerHTML = msg;
+  t.className = "show" + (isHint ? " hint" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ""; }, isHint ? 9000 : 2500);
+}
+
+async function focusSession(sid, machine) {
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (TOKEN) headers["X-Argus-Token"] = TOKEN;
+    const r = await fetch("/api/focus", {
+      method: "POST", headers,
+      body: JSON.stringify({ session_id: sid, machine }),
+    });
+    const d = await r.json();
+    if (d.status === "focused") toast("→ jumped to " + machine + " · check your terminal");
+    else if (d.status === "remote") toast("remote — run: <code>" + esc(d.hint) + "</code>", true);
+    else toast("no live tmux pane for this session");
+  } catch (e) {
+    toast("focus failed — is the daemon reachable?");
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const row = e.target.closest(".row");
+  if (row && row.dataset.sid) focusSession(row.dataset.sid, row.dataset.machine);
+});
 
 function render(data) {
   const all = [];

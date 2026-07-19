@@ -11,9 +11,12 @@ from argus.tui import ArgusApp, _fleet_from_json
 
 
 def test_bindings_cover_board_controls() -> None:
-    # BINDINGS is class-level real data (j/k nav, y/n reply, enter attach, quit).
+    # BINDINGS is class-level real data: arrows AND j/k nav, y/n reply, enter, quit.
     keys = {b[0] for b in ArgusApp.BINDINGS}
-    assert {"j", "k", "y", "n", "enter", "q"} <= keys
+    assert {"down,j", "up,k", "y", "n", "enter", "q"} <= keys
+    # Both arrow keys and vim keys are bound for navigation.
+    assert any("down" in k and "j" in k for k in keys)
+    assert any("up" in k and "k" in k for k in keys)
 
 
 def test_app_constructs_from_config() -> None:

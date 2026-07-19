@@ -48,7 +48,14 @@ log = logging.getLogger("argus.daemon")
 # whenever config.federation_token is set (required when bound to 0.0.0.0).
 TOKEN_HEADER = "x-argus-token"
 _PROTECTED_PATHS = frozenset(
-    {"/hook", "/peer/event", "/peer/state", "/api/state", "/api/state/snapshot"}
+    {
+        "/hook",
+        "/peer/event",
+        "/peer/state",
+        "/api/state",
+        "/api/state/snapshot",
+        "/api/focus",
+    }
 )
 # Hosts we trust enough to bake the token into the served board page.
 _LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
@@ -147,6 +154,30 @@ def create_app(config: ArgusConfig) -> FastAPI:
         """Return the current merged fleet as a one-shot JSON read."""
 
         return Federation.dump_fleet(_current_fleet(request.app))
+
+    @app.post("/api/focus")
+    async def api_focus(body: dict[str, Any], request: Request) -> dict[str, str]:
+        """Jump the user's terminal to a session's pane (local sessions only).
+
+        The board/TUI calls this to "go into" an agent. A session running on THIS
+        machine is switched to via tmux; one that lives on another node can't be
+        driven from here, so we hand back the ssh command to reach it.
+        """
+
+        app = request.app
+        session_id = str(body.get("session_id", ""))
+        machine = str(body.get("machine", ""))
+        cfg: ArgusConfig = app.state.config
+        if machine and machine != cfg.machine:
+            return {
+                "status": "remote",
+                "hint": f"ssh {machine} -t tmux attach -t {session_id}",
+            }
+        pane = app.state.pane_sessions.get(session_id)
+        if pane is None:
+            return {"status": "no_pane"}
+        ok = tmux.focus_pane(pane.pane_id)
+        return {"status": "focused" if ok else "no_pane", "pane": pane.pane_id}
 
     @app.post("/peer/event")
     async def peer_event(body: dict[str, Any], request: Request) -> dict[str, str]:

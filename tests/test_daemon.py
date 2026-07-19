@@ -124,6 +124,27 @@ def test_no_token_leaves_endpoints_open(tmp_path: Path) -> None:
         assert client.get("/api/state/snapshot").status_code == 200
 
 
+def test_focus_remote_returns_ssh_hint(tmp_path: Path) -> None:
+    app = create_app(_isolated_config(tmp_path))  # machine == "testbox"
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/focus", json={"session_id": "s1", "machine": "astrape"}
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "remote"
+        assert "ssh astrape" in body["hint"]
+
+
+def test_focus_unknown_local_session_reports_no_pane(tmp_path: Path) -> None:
+    app = create_app(_isolated_config(tmp_path))
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/focus", json={"session_id": "nope", "machine": "testbox"}
+        )
+        assert r.json()["status"] == "no_pane"
+
+
 def test_peer_state_merges_remote_machine(tmp_path: Path) -> None:
     app = create_app(_isolated_config(tmp_path))
     remote = {

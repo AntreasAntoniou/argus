@@ -200,3 +200,48 @@ def send_keys(
             _tmux("send-keys", "-t", pane_id, "Enter", socket=socket),
             check=True,
         )
+
+
+def list_clients(*, socket: str | None = None) -> list[str]:
+    """Return the tty of every tmux client currently attached to the server."""
+
+    proc = subprocess.run(
+        _tmux("list-clients", "-F", "#{client_tty}", socket=socket),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return []
+    return [line for line in proc.stdout.splitlines() if line]
+
+
+def focus_pane(pane_id: str, *, socket: str | None = None) -> bool:
+    """Bring a pane to the foreground for every attached tmux client.
+
+    Resolves the pane's window, switches each attached client to it, and selects
+    the pane — so "jump to this agent" from the board or TUI actually lands the
+    user's terminal on the right pane. Returns ``False`` if the pane no longer
+    exists; still selects the pane (for the next attach) when no client is live.
+    """
+
+    win = subprocess.run(
+        _tmux(
+            "display-message", "-p", "-t", pane_id,
+            "#{session_name}:#{window_index}", socket=socket,
+        ),
+        capture_output=True,
+        text=True,
+    )
+    target = win.stdout.strip()
+    if win.returncode != 0 or not target:
+        return False
+
+    for client in list_clients(socket=socket):
+        subprocess.run(
+            _tmux("switch-client", "-c", client, "-t", target, socket=socket),
+            check=False,
+        )
+    subprocess.run(
+        _tmux("select-pane", "-t", pane_id, socket=socket), check=False
+    )
+    return True
