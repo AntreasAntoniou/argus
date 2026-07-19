@@ -18,9 +18,11 @@ def test_missing_file_returns_defaults(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "does_not_exist.toml")
     assert isinstance(cfg, ArgusConfig)
     assert cfg.peers == []
+    assert cfg.daemon_host == "127.0.0.1"
     assert cfg.daemon_port == 8787
     assert cfg.notifier.kind is NotifierKind.NOOP
     assert cfg.thresholds.notify_batch_seconds == 300
+    assert cfg.thresholds.board_window_seconds == 1800
     assert cfg.thresholds.dead_after_seconds == 600
     assert cfg.thresholds.poll_interval_seconds == 5
     assert cfg.paths.claude_projects_root == Path.home() / ".claude" / "projects"
@@ -38,6 +40,7 @@ def test_partial_file_overrides_only_specified_keys(tmp_path: Path) -> None:
             [
                 'machine = "astrape"',
                 'peers = ["mac:8787", "forge:8787"]',
+                'daemon_host = "0.0.0.0"',
                 "daemon_port = 9000",
                 "",
                 "[thresholds]",
@@ -55,6 +58,7 @@ def test_partial_file_overrides_only_specified_keys(tmp_path: Path) -> None:
     cfg = load_config(cfg_path)
     assert cfg.machine == "astrape"
     assert cfg.peers == ["mac:8787", "forge:8787"]
+    assert cfg.daemon_host == "0.0.0.0"
     assert cfg.daemon_port == 9000
     # Overridden threshold applies; unspecified ones keep defaults.
     assert cfg.thresholds.dead_after_seconds == 30

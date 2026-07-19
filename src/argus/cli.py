@@ -154,6 +154,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_p = sub.add_parser("run", help="Run the argusd daemon (default).")
     run_p.add_argument("--port", type=int, default=None, help="Override daemon port.")
+    run_p.add_argument(
+        "--host",
+        type=str,
+        default=None,
+        help="Override bind address (0.0.0.0 to accept federation peers).",
+    )
 
     hooks_p = sub.add_parser(
         "install-hooks", help="Merge the async hook set into settings.json."
@@ -232,7 +238,8 @@ def daemon_main(argv: list[str] | None = None) -> int:
     from argus.daemon import create_app
 
     port = getattr(args, "port", None) or config.daemon_port
-    uvicorn.run(create_app(config), host="127.0.0.1", port=port)
+    host = getattr(args, "host", None) or config.daemon_host
+    uvicorn.run(create_app(config), host=host, port=port)
     return 0
 
 

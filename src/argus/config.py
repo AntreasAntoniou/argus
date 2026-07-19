@@ -105,6 +105,9 @@ class ArgusConfig:
         machine: This node's identity in the mesh (defaults to the hostname).
         peers: Static peer list as ``host:port`` strings for full-mesh
             federation (decision #6). Excludes self.
+        daemon_host: Address ``argusd`` binds to. Defaults to ``127.0.0.1``
+            (local-only, safe). Set to ``0.0.0.0`` to let federation peers on
+            the LAN reach this node — required for a multi-machine mesh.
         daemon_port: Port ``argusd`` binds its FastAPI/SSE server to.
         thresholds: Liveness and notification-batching thresholds.
         notifier: Push-notifier configuration.
@@ -113,6 +116,7 @@ class ArgusConfig:
 
     machine: str = field(default_factory=lambda: _hostname())
     peers: list[str] = field(default_factory=list)
+    daemon_host: str = "127.0.0.1"
     daemon_port: int = 8787
     thresholds: Thresholds = field(default_factory=Thresholds)
     notifier: NotifierConfig = field(default_factory=NotifierConfig)
@@ -199,6 +203,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> ArgusConfig:
     return ArgusConfig(
         machine=str(data.get("machine", defaults.machine)),
         peers=list(data.get("peers", defaults.peers)),
+        daemon_host=str(data.get("daemon_host", defaults.daemon_host)),
         daemon_port=int(data.get("daemon_port", defaults.daemon_port)),
         thresholds=_coerce_thresholds(data.get("thresholds", {})),
         notifier=_coerce_notifier(data.get("notifier", {})),
