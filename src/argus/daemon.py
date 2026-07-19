@@ -199,15 +199,54 @@ async def state_stream(app: FastAPI) -> AsyncIterator[dict[str, str]]:
 
 def _current_fleet(app: FastAPI) -> FleetState:
     """Combine this node's local snapshots with the peer-learned remote view,
-    filtered to the board window so finished history stays off the board."""
+    deduped across machines and filtered to the board window."""
 
     fleet = FleetState()
     fleet.merge(app.state.store.local_fleet())
     fleet.merge(app.state.remote)
     config: ArgusConfig = app.state.config
+    fleet = dedupe_sessions(
+        fleet,
+        local_machine=config.machine,
+        local_panes=set(app.state.pane_sessions),
+    )
     return visible_fleet(
         fleet, now=utcnow(), window_seconds=config.thresholds.board_window_seconds
     )
+
+
+def dedupe_sessions(
+    fleet: FleetState, *, local_machine: str, local_panes: set[str]
+) -> FleetState:
+    """Collapse a session that appears under several machines to a single row.
+
+    Claude's ``~/.claude/projects`` is often synced across machines, so every
+    node ingests the *same* transcripts and would otherwise show each session
+    once per machine. Session ids are globally-unique UUIDs, so a shared id means
+    literally the same session — keep one copy, attributed to where it actually
+    runs. Preference: (1) if THIS node has a live pane for it, our copy wins
+    (authoritative "runs here"); (2) a non-terminal copy over a terminal one;
+    (3) most recently updated. On distinct (non-synced) fleets this is a no-op.
+    """
+
+    copies: dict[str, list[SessionSnapshot]] = {}
+    for snaps in fleet.machines.values():
+        for snap in snaps:
+            copies.setdefault(snap.session_id, []).append(snap)
+
+    out = FleetState()
+    for session_id, snaps in copies.items():
+        if len(snaps) == 1:
+            best = snaps[0]
+        elif session_id in local_panes and any(
+            s.machine == local_machine for s in snaps
+        ):
+            best = next(s for s in snaps if s.machine == local_machine)
+        else:
+            pool = [s for s in snaps if not s.is_terminal] or snaps
+            best = max(pool, key=lambda s: s.updated_at)
+        out.machines.setdefault(best.machine, []).append(best)
+    return out
 
 
 def visible_fleet(

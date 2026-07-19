@@ -172,6 +172,49 @@ def test_visible_fleet_hides_stale_but_keeps_recent_and_blocked() -> None:
     assert ids == {"recent", "old-block"}  # stale dropped, blocked always kept
 
 
+def test_dedupe_prefers_local_pane_then_live_then_recent() -> None:
+    from argus.daemon import dedupe_sessions
+
+    now = utcnow()
+    fleet = FleetState()
+    # Same session id synced onto both machines (thinking on both).
+    fleet.upsert(
+        SessionSnapshot("dup", "hestia", SessionStatus.THINKING, updated_at=now)
+    )
+    fleet.upsert(
+        SessionSnapshot("dup", "astrape", SessionStatus.THINKING, updated_at=now)
+    )
+    # A distinct session only on astrape.
+    fleet.upsert(SessionSnapshot("solo", "astrape", SessionStatus.TOOL, updated_at=now))
+
+    # hestia has the live pane for "dup" → it is attributed to hestia, once.
+    out = dedupe_sessions(fleet, local_machine="hestia", local_panes={"dup"})
+    rows = out.all_sessions()
+    dup = [s for s in rows if s.session_id == "dup"]
+    assert len(dup) == 1 and dup[0].machine == "hestia"
+    # The distinct session survives untouched.
+    assert any(s.session_id == "solo" and s.machine == "astrape" for s in rows)
+
+
+def test_dedupe_keeps_live_copy_over_dead() -> None:
+    from argus.daemon import dedupe_sessions
+
+    now = utcnow()
+    fleet = FleetState()
+    fleet.upsert(
+        SessionSnapshot(
+            "s", "hestia", SessionStatus.DEAD, updated_at=now - timedelta(seconds=5)
+        )
+    )
+    fleet.upsert(
+        SessionSnapshot("s", "astrape", SessionStatus.THINKING, updated_at=now)
+    )
+    out = dedupe_sessions(fleet, local_machine="hestia", local_panes=set())
+    rows = out.all_sessions()
+    assert len(rows) == 1
+    assert rows[0].machine == "astrape" and rows[0].status is SessionStatus.THINKING
+
+
 def test_visible_fleet_zero_window_shows_all() -> None:
     now = utcnow()
     fleet = FleetState()
