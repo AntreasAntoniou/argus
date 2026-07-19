@@ -17,10 +17,11 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from argus.config import ArgusConfig, NotifierKind
@@ -49,6 +50,12 @@ TOKEN_HEADER = "x-argus-token"
 _PROTECTED_PATHS = frozenset(
     {"/hook", "/peer/event", "/peer/state", "/api/state", "/api/state/snapshot"}
 )
+# Hosts we trust enough to bake the token into the served board page.
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
+
+# The self-contained web board, served at ``GET /`` (token injected at request
+# time for loopback callers).
+_BOARD_HTML = (Path(__file__).parent / "board.html").read_text(encoding="utf-8")
 
 
 def create_app(config: ArgusConfig) -> FastAPI:
@@ -82,7 +89,12 @@ def create_app(config: ArgusConfig) -> FastAPI:
 
         token = config.federation_token
         if token and request.url.path in _PROTECTED_PATHS:
-            if request.headers.get(TOKEN_HEADER) != token:
+            # Header for machine clients (federation/hooks); query param for the
+            # browser board, whose EventSource/fetch-poll cannot set headers.
+            supplied = request.headers.get(TOKEN_HEADER) or request.query_params.get(
+                "token"
+            )
+            if supplied != token:
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
     app.state.store = None  # created in lifespan (SQLite is bound to its thread)
@@ -107,6 +119,21 @@ def create_app(config: ArgusConfig) -> FastAPI:
     # top-level route (FastAPI's lazy ``include_router`` otherwise hides it
     # behind an opaque router node that route introspection cannot see).
     app.router.routes.extend(hooks_router.routes)
+
+    @app.get("/")
+    async def board(request: Request) -> HTMLResponse:
+        """Serve the self-contained web board.
+
+        The board polls ``/api/state/snapshot?token=…`` (browsers cannot set the
+        auth header). To keep the shared secret off the LAN, the token is baked
+        into the page ONLY for loopback requests; a remote viewer gets a blank
+        token and must append ``?token=`` themselves.
+        """
+
+        client_host = request.client.host if request.client else ""
+        token = config.federation_token if client_host in _LOOPBACK else ""
+        html = _BOARD_HTML.replace("__ARGUS_TOKEN__", token)
+        return HTMLResponse(html)
 
     @app.get("/api/state")
     async def api_state(request: Request) -> EventSourceResponse:

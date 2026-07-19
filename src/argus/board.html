@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus — fleet board</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #121722; --line: #222a39; --ink: #e6edf3;
+    --dim: #8b98ac; --faint: #5b6472;
+    --need: #ffb454; --need-bg: #2a1f0d; --need-line: #6b4d18;
+    --work: #4aa8ff; --tool: #b58aff; --idle: #7d8796; --dead: #4a5261;
+    --ok: #3fb950;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--ink);
+    font: 14px/1.45 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace; }
+  body { padding: 18px 20px 60px; max-width: 1100px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+  h1 { font-size: 18px; letter-spacing: 3px; font-weight: 700; }
+  h1 .eye { color: var(--need); }
+  .counts { display: flex; gap: 16px; color: var(--dim); font-size: 12px; }
+  .counts b { color: var(--ink); font-weight: 700; }
+  .status { margin-left: auto; display: flex; align-items: center; gap: 8px;
+    color: var(--dim); font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dead);
+    transition: background .3s; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.err { background: #f85149; box-shadow: 0 0 8px #f85149; }
+  .machines { display: flex; gap: 6px; }
+  .mbadge { font-size: 11px; padding: 1px 7px; border-radius: 10px;
+    border: 1px solid var(--line); color: var(--dim); }
+  section { margin-bottom: 22px; }
+  .sechead { font-size: 11px; letter-spacing: 2px; color: var(--faint);
+    text-transform: uppercase; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; }
+  .sechead.need { color: var(--need); }
+  .sechead .n { color: var(--ink); }
+  .row { display: grid; grid-template-columns: 66px 92px 1fr auto;
+    gap: 12px; align-items: center; padding: 9px 12px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--panel); margin-bottom: 6px; }
+  .row.blocked { border-color: var(--need-line); background: var(--need-bg); }
+  .row.quiet { opacity: .58; }
+  .mtag { font-size: 11px; color: var(--dim); text-align: center;
+    border: 1px solid var(--line); border-radius: 6px; padding: 2px 0; }
+  .pill { font-size: 11px; font-weight: 700; text-align: center; padding: 2px 0;
+    border-radius: 6px; text-transform: uppercase; letter-spacing: .5px; }
+  .pill.blocked { background: var(--need); color: #1a1205; }
+  .pill.thinking, .pill.starting { color: var(--work); border: 1px solid var(--work); }
+  .pill.tool { color: var(--tool); border: 1px solid var(--tool); }
+  .pill.idle { color: var(--idle); border: 1px solid var(--idle); }
+  .pill.done, .pill.dead { color: var(--dead); border: 1px solid var(--dead); }
+  .mid { min-width: 0; }
+  .cwd { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { color: var(--faint); font-size: 12px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .meta .sep { opacity: .5; margin: 0 6px; }
+  .q { color: var(--need); font-size: 13px; margin-top: 3px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .right { text-align: right; color: var(--dim); font-size: 12px; white-space: nowrap; }
+  .right .age { color: var(--ink); }
+  .empty { color: var(--faint); font-size: 13px; padding: 6px 2px; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; text-align: center;
+    color: var(--faint); font-size: 11px; padding: 6px; background: var(--bg);
+    border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+  <header>
+    <h1><span class="eye">●</span> ARGUS</h1>
+    <div class="counts">
+      <span><b id="c-need">0</b> need you</span>
+      <span><b id="c-work">0</b> working</span>
+      <span><b id="c-quiet">0</b> quiet</span>
+    </div>
+    <div class="machines" id="machines"></div>
+    <div class="status"><span id="upd">connecting…</span><span class="dot" id="dot"></span></div>
+  </header>
+
+  <section id="sec-need" hidden>
+    <div class="sechead need">▲ needs you <span class="n" id="n-need"></span></div>
+    <div id="list-need"></div>
+  </section>
+  <section id="sec-work">
+    <div class="sechead">working <span class="n" id="n-work"></span></div>
+    <div id="list-work"></div>
+  </section>
+  <section id="sec-quiet">
+    <div class="sechead">quiet <span class="n" id="n-quiet"></span></div>
+    <div id="list-quiet"></div>
+  </section>
+
+  <footer id="foot">argus board · polling every 2s</footer>
+
+<script>
+const TOKEN = "__ARGUS_TOKEN__";
+const WORKING = new Set(["starting", "thinking", "tool"]);
+const $ = (id) => document.getElementById(id);
+
+function fmtTokens(t) {
+  if (!t) return "0";
+  if (t >= 1e6) return (t / 1e6).toFixed(t >= 1e7 ? 0 : 1) + "M";
+  if (t >= 1e3) return Math.round(t / 1e3) + "k";
+  return String(t);
+}
+function fmtAge(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return Math.round(s) + "s";
+  if (s < 3600) return Math.round(s / 60) + "m";
+  if (s < 86400) return Math.round(s / 3600) + "h";
+  return Math.round(s / 86400) + "d";
+}
+function base(cwd) {
+  if (!cwd || cwd === "/") return cwd || "—";
+  const p = cwd.replace(/\/+$/, "").split("/");
+  return p[p.length - 1] || cwd;
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function rowHtml(s) {
+  const st = s.status;
+  const label = st === "tool" && s.tool_name ? "tool:" + esc(s.tool_name) : st;
+  const cls = "row " + (st === "blocked" ? "blocked" : WORKING.has(st) ? "work" : "quiet");
+  const metaBits = [];
+  if (s.branch && s.branch !== "HEAD") metaBits.push(esc(s.branch));
+  if (s.tokens) metaBits.push(fmtTokens(s.tokens) + " tok");
+  if (s.last_tool && st !== "tool") metaBits.push("↳" + esc(s.last_tool));
+  const q = st === "blocked" && s.question
+    ? `<div class="q">▸ ${esc(s.question)}</div>` : "";
+  return `<div class="${cls}">
+    <div class="mtag">${esc(s.machine)}</div>
+    <div class="pill ${esc(st)}">${label}</div>
+    <div class="mid">
+      <div class="cwd" title="${esc(s.cwd || "")}">${esc(base(s.cwd))}</div>
+      <div class="meta">${metaBits.join('<span class="sep">·</span>')}</div>
+      ${q}
+    </div>
+    <div class="right"><span class="age">${fmtAge(s.updated_at)}</span></div>
+  </div>`;
+}
+
+function render(data) {
+  const all = [];
+  const machines = Object.keys(data.machines || {}).sort();
+  for (const m of machines) for (const s of data.machines[m]) all.push(s);
+
+  const need = all.filter(s => s.status === "blocked")
+    .sort((a, b) => new Date(a.updated_at) - new Date(b.updated_at));
+  const work = all.filter(s => WORKING.has(s.status))
+    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+  const quiet = all.filter(s => !WORKING.has(s.status) && s.status !== "blocked")
+    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+
+  $("c-need").textContent = need.length;
+  $("c-work").textContent = work.length;
+  $("c-quiet").textContent = quiet.length;
+  $("n-need").textContent = need.length;
+  $("n-work").textContent = work.length;
+  $("n-quiet").textContent = quiet.length;
+
+  $("machines").innerHTML = machines.map(m => `<span class="mbadge">${esc(m)}</span>`).join("");
+  $("sec-need").hidden = need.length === 0;
+  $("list-need").innerHTML = need.map(rowHtml).join("");
+  $("list-work").innerHTML = work.length ? work.map(rowHtml).join("")
+    : '<div class="empty">no agents working</div>';
+  $("list-quiet").innerHTML = quiet.length ? quiet.map(rowHtml).join("")
+    : '<div class="empty">nothing quiet</div>';
+
+  document.title = (need.length ? `(${need.length}) ` : "") + "Argus — fleet board";
+}
+
+let fails = 0;
+async function tick() {
+  try {
+    const url = "/api/state/snapshot" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+    fails = 0;
+    $("dot").className = "dot live";
+    $("upd").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    fails++;
+    $("dot").className = "dot err";
+    $("upd").textContent = fails > 2 ? "daemon unreachable" : "reconnecting…";
+  }
+}
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>

@@ -91,6 +91,24 @@ def test_token_gate_blocks_unauthenticated_and_allows_with_token(
         )
 
 
+def test_board_served_and_snapshot_token_via_query(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    config.federation_token = "s3cret"
+    app = create_app(config)
+    with TestClient(app) as client:
+        # The board shell is public (no token) and is real HTML.
+        page = client.get("/")
+        assert page.status_code == 200
+        assert "ARGUS" in page.text
+        # Non-loopback caller (TestClient host is "testclient") must NOT receive
+        # the baked-in token — it stays a placeholder, so the secret never leaks
+        # to a remote viewer.
+        assert "s3cret" not in page.text
+        # The board's data endpoint accepts the token via query param.
+        assert client.get("/api/state/snapshot?token=s3cret").status_code == 200
+        assert client.get("/api/state/snapshot?token=wrong").status_code == 401
+
+
 def test_no_token_leaves_endpoints_open(tmp_path: Path) -> None:
     # Default (empty token) preserves the local-only, no-auth behaviour.
     app = create_app(_isolated_config(tmp_path))
