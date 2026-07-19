@@ -89,12 +89,10 @@ def create_app(config: ArgusConfig) -> FastAPI:
 
         token = config.federation_token
         if token and request.url.path in _PROTECTED_PATHS:
-            # Header for machine clients (federation/hooks); query param for the
-            # browser board, whose EventSource/fetch-poll cannot set headers.
-            supplied = request.headers.get(TOKEN_HEADER) or request.query_params.get(
-                "token"
-            )
-            if supplied != token:
+            # Header only — never a query param. A ?token= in the URL leaks into
+            # uvicorn access logs and browser history (observability / cache). The
+            # board uses fetch(), which can set this header; peers/hooks set it too.
+            if request.headers.get(TOKEN_HEADER) != token:
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
     app.state.store = None  # created in lifespan (SQLite is bound to its thread)
@@ -124,16 +122,19 @@ def create_app(config: ArgusConfig) -> FastAPI:
     async def board(request: Request) -> HTMLResponse:
         """Serve the self-contained web board.
 
-        The board polls ``/api/state/snapshot?token=…`` (browsers cannot set the
-        auth header). To keep the shared secret off the LAN, the token is baked
-        into the page ONLY for loopback requests; a remote viewer gets a blank
-        token and must append ``?token=`` themselves.
+        The board fetch-polls ``/api/state/snapshot`` sending the token as a
+        header. To keep the shared secret off the LAN, it is baked into the page
+        ONLY for loopback callers — ``request.client.host`` is the raw socket
+        peer (uvicorn runs without ``--proxy-headers``, so it is not header-
+        spoofable); a remote viewer gets a blank token and must supply their own.
+        The page carries the token, so it is served ``no-store`` to keep it out
+        of the browser's disk cache.
         """
 
         client_host = request.client.host if request.client else ""
         token = config.federation_token if client_host in _LOOPBACK else ""
         html = _BOARD_HTML.replace("__ARGUS_TOKEN__", token)
-        return HTMLResponse(html)
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/state")
     async def api_state(request: Request) -> EventSourceResponse:

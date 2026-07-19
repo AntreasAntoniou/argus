@@ -100,13 +100,21 @@ def test_board_served_and_snapshot_token_via_query(tmp_path: Path) -> None:
         page = client.get("/")
         assert page.status_code == 200
         assert "ARGUS" in page.text
+        # The page is served no-store (it may carry the token for loopback).
+        assert page.headers.get("cache-control") == "no-store"
         # Non-loopback caller (TestClient host is "testclient") must NOT receive
         # the baked-in token — it stays a placeholder, so the secret never leaks
         # to a remote viewer.
         assert "s3cret" not in page.text
-        # The board's data endpoint accepts the token via query param.
-        assert client.get("/api/state/snapshot?token=s3cret").status_code == 200
-        assert client.get("/api/state/snapshot?token=wrong").status_code == 401
+        # The data endpoint takes the token via header only (never a URL param,
+        # which would leak into access logs / browser history).
+        assert (
+            client.get(
+                "/api/state/snapshot", headers={"X-Argus-Token": "s3cret"}
+            ).status_code
+            == 200
+        )
+        assert client.get("/api/state/snapshot?token=s3cret").status_code == 401
 
 
 def test_no_token_leaves_endpoints_open(tmp_path: Path) -> None:
