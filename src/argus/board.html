@@ -176,7 +176,7 @@ async function focusSession(sid, machine) {
       body: JSON.stringify({ session_id: sid, machine }),
     });
     const d = await r.json();
-    if (d.status === "focused") toast("→ jumped to " + machine + " · check your terminal");
+    if (d.status === "focused") toast("→ jumped to " + esc(machine) + " · check your terminal");
     else if (d.status === "remote") toast("remote — run: <code>" + esc(d.hint) + "</code>", true);
     else toast("no live tmux pane for this session");
   } catch (e) {
