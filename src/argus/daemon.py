@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from argus.config import ArgusConfig, NotifierKind
@@ -42,6 +43,13 @@ from argus.store import SessionStore
 
 log = logging.getLogger("argus.daemon")
 
+# Header carrying the shared federation secret. Endpoints below are gated on it
+# whenever config.federation_token is set (required when bound to 0.0.0.0).
+TOKEN_HEADER = "x-argus-token"
+_PROTECTED_PATHS = frozenset(
+    {"/hook", "/peer/event", "/peer/state", "/api/state", "/api/state/snapshot"}
+)
+
 
 def create_app(config: ArgusConfig) -> FastAPI:
     """Build and wire the ``argusd`` FastAPI application.
@@ -61,6 +69,22 @@ def create_app(config: ArgusConfig) -> FastAPI:
 
     app = FastAPI(title="argusd", lifespan=_lifespan)
     app.state.config = config
+
+    @app.middleware("http")
+    async def _require_token(request: Request, call_next: Any) -> Any:
+        """Gate sensitive endpoints on the shared secret when one is configured.
+
+        No-op when ``federation_token`` is empty (local-only default). When set,
+        every request to a protected path must carry a matching ``X-Argus-Token``
+        header — this is what makes a ``0.0.0.0`` LAN bind safe against state
+        injection and session-data disclosure.
+        """
+
+        token = config.federation_token
+        if token and request.url.path in _PROTECTED_PATHS:
+            if request.headers.get(TOKEN_HEADER) != token:
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return await call_next(request)
     app.state.store = None  # created in lifespan (SQLite is bound to its thread)
     app.state.remote = FleetState()  # snapshots learned from peers, by machine
     app.state.federation = Federation(config)

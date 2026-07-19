@@ -165,10 +165,17 @@ class ArgusApp(App[None]):
 
         import httpx
 
+        headers = (
+            {"X-Argus-Token": self._config.federation_token}
+            if self._config.federation_token
+            else None
+        )
         while True:
             try:
                 timeout = httpx.Timeout(None, connect=5.0)
-                async with httpx.AsyncClient(timeout=timeout) as client:
+                async with httpx.AsyncClient(
+                    timeout=timeout, headers=headers
+                ) as client:
                     async with client.stream("GET", self._sse_url) as response:
                         response.raise_for_status()
                         async for line in response.aiter_lines():

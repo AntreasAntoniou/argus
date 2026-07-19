@@ -65,6 +65,39 @@ def test_hook_post_updates_readable_state(tmp_path: Path) -> None:
         assert sessions[0]["status"] == SessionStatus.BLOCKED.value
 
 
+def test_token_gate_blocks_unauthenticated_and_allows_with_token(
+    tmp_path: Path,
+) -> None:
+    config = _isolated_config(tmp_path)
+    config.federation_token = "s3cret"
+    app = create_app(config)
+    with TestClient(app) as client:
+        # No token → protected endpoints rejected.
+        assert client.get("/api/state/snapshot").status_code == 401
+        assert (
+            client.post("/peer/state", json={"machines": {}}).status_code == 401
+        )
+        # Correct token → allowed.
+        ok = client.get(
+            "/api/state/snapshot", headers={"X-Argus-Token": "s3cret"}
+        )
+        assert ok.status_code == 200
+        # Wrong token → rejected.
+        assert (
+            client.get(
+                "/api/state/snapshot", headers={"X-Argus-Token": "nope"}
+            ).status_code
+            == 401
+        )
+
+
+def test_no_token_leaves_endpoints_open(tmp_path: Path) -> None:
+    # Default (empty token) preserves the local-only, no-auth behaviour.
+    app = create_app(_isolated_config(tmp_path))
+    with TestClient(app) as client:
+        assert client.get("/api/state/snapshot").status_code == 200
+
+
 def test_peer_state_merges_remote_machine(tmp_path: Path) -> None:
     app = create_app(_isolated_config(tmp_path))
     remote = {

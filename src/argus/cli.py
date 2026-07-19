@@ -31,7 +31,7 @@ HOOK_EVENTS: tuple[HookEvent, ...] = (
 )
 
 
-def hook_command(port: int) -> str:
+def hook_command(port: int, token: str = "") -> str:
     """Return the async shell command a single hook runs to POST to the daemon.
 
     Fully implemented (pure). Kept here so :func:`install_hooks` and tests share
@@ -39,19 +39,22 @@ def hook_command(port: int) -> str:
 
     Args:
         port: The local ``argusd`` port to POST to.
+        token: Shared federation secret; added as an ``X-Argus-Token`` header so
+            local hooks authenticate against a token-gated daemon. Empty = none.
 
     Returns:
         A non-blocking curl one-liner that forwards the hook JSON on stdin.
     """
 
+    auth = f"-H 'X-Argus-Token: {token}' " if token else ""
     return (
         "curl -s -m 2 -X POST "
         f"http://127.0.0.1:{port}/hook "
-        "-H 'Content-Type: application/json' --data-binary @- >/dev/null 2>&1 &"
+        f"-H 'Content-Type: application/json' {auth}--data-binary @- >/dev/null 2>&1 &"
     )
 
 
-def build_hook_block(port: int) -> dict[str, object]:
+def build_hook_block(port: int, token: str = "") -> dict[str, object]:
     """Build the ``hooks`` settings fragment Argus merges in.
 
     STUB. Implementers: produce the exact ``settings.json`` ``hooks`` structure
@@ -67,7 +70,7 @@ def build_hook_block(port: int) -> dict[str, object]:
         :func:`hook_command`.
     """
 
-    command = hook_command(port)
+    command = hook_command(port, token)
     return {
         event.value: [
             {"matcher": "*", "hooks": [{"type": "command", "command": command}]}
@@ -80,6 +83,7 @@ def install_hooks(
     settings_path: Path,
     *,
     port: int,
+    token: str = "",
     dry_run: bool = False,
     backup: bool = True,
 ) -> dict[str, object]:
@@ -110,9 +114,9 @@ def install_hooks(
 
     merged = copy.deepcopy(existing)
     hooks = merged.setdefault("hooks", {})
-    command = hook_command(port)
+    command = hook_command(port, token)
 
-    for event, groups in build_hook_block(port).items():
+    for event, groups in build_hook_block(port, token).items():
         event_groups = hooks.setdefault(event, [])
         already_present = any(
             isinstance(group, dict)
@@ -212,6 +216,7 @@ def daemon_main(argv: list[str] | None = None) -> int:
         result = install_hooks(
             settings_path,
             port=config.daemon_port,
+            token=config.federation_token,
             dry_run=args.dry_run,
             backup=args.backup,
         )

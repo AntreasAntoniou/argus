@@ -49,7 +49,17 @@ class Federation:
         self.config = config
         self.machine = config.machine
         self._peers = list(config.peers)
-        self._client = client if client is not None else httpx.AsyncClient(timeout=2.0)
+        if client is not None:
+            self._client = client
+        else:
+            # Present the shared secret on every peer call so a token-gated peer
+            # accepts our exchanges (no-op header when unset).
+            headers = (
+                {"X-Argus-Token": config.federation_token}
+                if config.federation_token
+                else None
+            )
+            self._client = httpx.AsyncClient(timeout=2.0, headers=headers)
         # Running merged view of self + every peer, folded LWW-by-updated_at.
         self._aggregate = FleetState()
 
