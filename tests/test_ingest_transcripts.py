@@ -96,6 +96,54 @@ def test_events_follow_transcript_order_and_hook_mapping(
     assert HookEvent.POST_TOOL_USE in kinds
 
 
+def test_parse_line_extracts_git_branch() -> None:
+    line = {
+        "type": "user",
+        "sessionId": "s",
+        "gitBranch": "feature/x",
+        "timestamp": "2026-07-15T10:00:00Z",
+        "message": {"content": [{"type": "text", "text": "hi"}]},
+    }
+    event = parse_transcript_line(line, machine="mac")
+    assert event is not None
+    assert event.branch == "feature/x"
+
+
+def test_parse_line_extracts_token_usage() -> None:
+    line = {
+        "type": "assistant",
+        "sessionId": "s",
+        "timestamp": "2026-07-15T10:00:01Z",
+        "message": {
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": 10,
+                "cache_read_input_tokens": 5,
+            },
+            "content": [{"type": "tool_use", "name": "Read", "input": {}}],
+        },
+    }
+    event = parse_transcript_line(line, machine="mac")
+    assert event is not None
+    # input + output only; cache_read/cache_creation are excluded so the running
+    # total stays proportional to real work instead of ballooning per-turn.
+    assert event.tokens == 150
+
+
+def test_parse_line_no_usage_is_zero_tokens() -> None:
+    line = {
+        "type": "user",
+        "sessionId": "s",
+        "timestamp": "2026-07-15T10:00:00Z",
+        "message": {"content": [{"type": "text", "text": "hi"}]},
+    }
+    event = parse_transcript_line(line, machine="mac")
+    assert event is not None
+    assert event.tokens == 0
+    assert event.branch is None
+
+
 def test_watch_offset_reads_only_appended_lines(tmp_path: Path) -> None:
     path = tmp_path / "live.jsonl"
     offsets: dict[Path, int] = {}

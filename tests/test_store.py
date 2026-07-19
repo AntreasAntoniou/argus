@@ -26,6 +26,54 @@ def test_append_then_get_roundtrips(tmp_path: Path) -> None:
     store.close()
 
 
+def test_journal_slims_raw_but_keeps_question(tmp_path: Path) -> None:
+    # A fat transcript line (huge content) journals only the question keys, but
+    # recover still rebuilds the BLOCKED question from the slimmed raw.
+    store = SessionStore(tmp_path / "j.sqlite3", machine="mac")
+    fat = {
+        "type": "system",
+        "notification": "Run db migration? (y/n)",
+        "message": {"content": [{"type": "text", "text": "x" * 100_000}]},
+    }
+    store.append(
+        Event(
+            session_id="s1",
+            machine="mac",
+            hook_event_name=HookEvent.NOTIFICATION,
+            raw=fat,
+        )
+    )
+    stored = store.events_for("s1")[0]
+    assert stored.raw == {"notification": "Run db migration? (y/n)"}  # slimmed
+    store.recover()
+    assert store.get("s1").status is SessionStatus.BLOCKED
+    assert store.get("s1").question == "Run db migration? (y/n)"
+    store.close()
+
+
+def test_compact_is_idempotent_and_preserves_question(tmp_path: Path) -> None:
+    import json
+
+    store = SessionStore(tmp_path / "j.sqlite3", machine="mac")
+    # Simulate a pre-fix journal row that stored the full fat transcript line
+    # (compact is the migration path for those; new appends are already slim).
+    fat = json.dumps({"notification": "Proceed? (y/n)", "junk": "z" * 50_000})
+    store._conn.execute(
+        "INSERT INTO events (session_id, machine, hook_event_name, ts, raw) "
+        "VALUES ('s1', 'mac', ?, ?, ?)",
+        (HookEvent.NOTIFICATION.value, utcnow().isoformat(), fat),
+    )
+    store._conn.commit()
+
+    rewritten, _ = store.compact()
+    assert rewritten == 1  # the fat row was slimmed
+    again, _ = store.compact()
+    assert again == 0  # already slim → no-op
+    store.recover()
+    assert store.get("s1").question == "Proceed? (y/n)"
+    store.close()
+
+
 def test_get_unknown_session_is_none(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "j.sqlite3", machine="mac")
     assert store.get("nope") is None

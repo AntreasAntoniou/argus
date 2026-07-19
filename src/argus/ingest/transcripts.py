@@ -64,6 +64,39 @@ def _content_items(message: dict[str, Any]) -> list[dict[str, Any]]:
     return [i for i in content if isinstance(i, dict)]
 
 
+# Per-turn token counters we accumulate into the board's "tokens burned". Only
+# the NON-cached input plus generated output — deliberately excluding
+# cache_read/cache_creation, which re-report the whole context every turn and,
+# summed across hundreds of turns, balloon into meaningless billions. This keeps
+# the number monotonic and proportional to real work (SessionSnapshot.tokens:
+# "cumulative tokens burned (input + output)").
+_USAGE_KEYS = (
+    "input_tokens",
+    "output_tokens",
+)
+
+
+def _usage_tokens(message: dict[str, Any]) -> int:
+    """Sum the token counters on an assistant ``message.usage``, or ``0``."""
+
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return 0
+    total = 0
+    for key in _USAGE_KEYS:
+        value = usage.get(key)
+        if isinstance(value, int):
+            total += value
+    return total
+
+
+def _branch(line: dict[str, Any]) -> str | None:
+    """Extract the git branch a transcript line was recorded on, if any."""
+
+    branch = line.get("gitBranch")
+    return branch if isinstance(branch, str) and branch else None
+
+
 def parse_transcript_line(line: dict[str, Any], *, machine: str) -> Event | None:
     """Convert one decoded JSONL line into an :class:`Event`, or skip it.
 
@@ -90,9 +123,11 @@ def parse_transcript_line(line: dict[str, Any], *, machine: str) -> Event | None
 
     ts = _parse_ts(line.get("timestamp"))
     cwd = line.get("cwd") if isinstance(line.get("cwd"), str) else None
+    branch = _branch(line)
 
     if ltype == "assistant":
         message = line.get("message") or {}
+        tokens = _usage_tokens(message)
         for item in _content_items(message):
             if item.get("type") == "tool_use":
                 return Event(
@@ -104,8 +139,22 @@ def parse_transcript_line(line: dict[str, Any], *, machine: str) -> Event | None
                     tool_name=item.get("name"),
                     tool_input=item.get("input"),
                     raw=line,
+                    branch=branch,
+                    tokens=tokens,
                 )
-        # Text/thinking-only assistant turn: no hook-model transition.
+        # Text/thinking-only assistant turn: no state transition, but its usage
+        # still counts — emit a token-only event so the burn is not lost.
+        if tokens:
+            return Event(
+                session_id=session_id,
+                machine=machine,
+                hook_event_name="transcript",
+                ts=ts,
+                cwd=cwd,
+                raw=line,
+                branch=branch,
+                tokens=tokens,
+            )
         return None
 
     if ltype == "user":
@@ -120,6 +169,7 @@ def parse_transcript_line(line: dict[str, Any], *, machine: str) -> Event | None
             ts=ts,
             cwd=cwd,
             raw=line,
+            branch=branch,
         )
 
     if ltype == "system":
@@ -137,6 +187,7 @@ def parse_transcript_line(line: dict[str, Any], *, machine: str) -> Event | None
             ts=ts,
             cwd=cwd,
             raw=line,
+            branch=branch,
         )
 
     return None

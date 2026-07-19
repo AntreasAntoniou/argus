@@ -43,12 +43,19 @@ class Thresholds:
             responsive).
         notify_batch_seconds: Minimum spacing between non-critical WhatsApp
             digests. Defaults to 300 (≤1 msg / 5 min per decision #7).
+        board_window_seconds: How recently a session must have been active to
+            appear on the board. Sessions quiet longer than this drop off the
+            departures board (the journal keeps them for timelines) — this is
+            what stops a multi-week journal from burying today's live fleet under
+            hundreds of finished sessions. ``needs_you`` (BLOCKED) sessions are
+            always shown regardless of age. Defaults to 1800 (30 min).
     """
 
     dead_after_seconds: int = 600
     jsonl_silent_seconds: int = 45
     poll_interval_seconds: int = 5
     notify_batch_seconds: int = 300
+    board_window_seconds: int = 1800
 
 
 @dataclass(slots=True)
@@ -134,6 +141,9 @@ def _coerce_thresholds(data: dict[str, Any]) -> Thresholds:
         ),
         notify_batch_seconds=int(
             data.get("notify_batch_seconds", defaults.notify_batch_seconds)
+        ),
+        board_window_seconds=int(
+            data.get("board_window_seconds", defaults.board_window_seconds)
         ),
     )
 

@@ -99,6 +99,11 @@ class Event:
         tool_input: Parsed tool input payload for tool events.
         raw: The original payload (hook JSON body or parsed JSONL line) for
             audit and lossless replay.
+        branch: Git branch of ``cwd`` at the time of the event, if the source
+            reported one (transcript ``gitBranch`` / hook payload).
+        tokens: Tokens attributable to this single event (an assistant turn's
+            ``message.usage`` total); the reducer accumulates these onto the
+            session snapshot. ``0`` for events with no usage.
     """
 
     session_id: str
@@ -109,6 +114,8 @@ class Event:
     tool_name: str | None = None
     tool_input: dict[str, Any] | None = None
     raw: dict[str, Any] | None = None
+    branch: str | None = None
+    tokens: int = 0
 
 
 @dataclass(slots=True)

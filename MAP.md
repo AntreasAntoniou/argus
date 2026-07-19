@@ -34,20 +34,41 @@ tmux panes ─┘                (pure)         (+SQLite journal)        │
 IDLE / DONE / DEAD. `needs_you` == BLOCKED; `is_terminal` == DONE|DEAD.
 Sessions bucket into **needs_you** (oldest-first), **working**, **quiet**.
 
-**Contract discipline:** `models.py` and `config.py` are **IMPLEMENTED and
-frozen** — the single source of truth every module codes against. Almost
-everything else is a **typed stub** (`NotImplementedError` / raising bodies)
-with intended-behavior tests marked `xfail(strict=False)`. See
-`SHARED_INTERFACES.md` for the authoritative seam doc and `DESIGN.md` for the
-decision record.
+**Contract discipline:** `models.py` and `config.py` are the **frozen contract**
+every module codes against. **Every module is now implemented** (the earlier
+stub phase is over — the whole suite passes, no `NotImplementedError` remains).
+See `SHARED_INTERFACES.md` for the seam doc and `DESIGN.md` for the decision
+record.
+
+### Liveness & "needs you" WITHOUT hooks (the load-bearing path)
+
+Real Claude Code transcripts do **not** record permission prompts (only
+`turn_duration` / `stop_hook_summary` system lines) and do **not** carry a
+`session_end` — so the transcript path alone can reach THINKING/TOOL/IDLE but
+never BLOCKED or DONE. The daemon therefore drives liveness and blocked-detection
+off **tmux**, via `correlate.py`:
+
+- **pane → session** is resolved *exactly* from the live claude process's argv
+  (`--session-id` / team `--parent-session-id`), found by walking the pane's
+  process subtree from one `ps` snapshot; a cwd→freshest-transcript fallback
+  covers argv-less sessions. (Claude renames its process to its version string,
+  e.g. `2.1.211`, which is how agent panes are spotted.)
+- **liveness**: a session with a correlated live pane is alive even when its
+  transcript has gone silent (an agent waiting on you writes nothing); death is
+  otherwise inferred from silence past `dead_after_seconds`.
+- **blocked**: correlated panes are captured and run through
+  `tmux.detect_prompt`; a hit is journalled as a synthetic `Notification` so the
+  reducer raises BLOCKED with the on-screen prompt as its question.
+- **board scope**: only sessions active within `thresholds.board_window_seconds`
+  (or currently BLOCKED) are emitted, so a multi-week journal does not bury
+  today's live fleet. `store.prune()` keeps the hot map lean after `recover()`.
 
 ### Implementation status
 
-| State | Modules |
-|---|---|
-| **Implemented (frozen contract)** | `models.py`, `config.py`, `__init__.py` |
-| **Partial** | `cli.py` (HOOK_EVENTS/`hook_command`/`build_parser`/install-hooks done; serve + TUI bodies stub), `notify.py` (`Digest.render` + `NoopNotifier` done; WhatsApp + batcher stub) |
-| **Stub** | `daemon.py`, `store.py`, `reducer.py`, `timeline.py`, `diffs.py`, `federation.py`, `reply.py`, `tui.py`, `ingest/hooks.py`, `ingest/tmux.py`, `ingest/transcripts.py` |
+All modules implemented. `correlate.py` is the pane↔session bridge added to make
+liveness/blocked work in the no-hooks default. `notify.py`'s WhatsApp path sends
+via the configured command; `cli.py` also exposes `argusd compact` (journal
+raw-slimming / VACUUM).
 
 ## Entry points
 
@@ -74,6 +95,7 @@ decision record.
 | `federation.py` ✱ | `Federation(config)`: `push_event`, `exchange`, `run`, `merge_remote` | Full-mesh state exchange over httpx; periodic full-state push + LWW merge. |
 | `notify.py` ◐ | `Digest`+`.render()`✅, `Notifier` (Protocol), `NoopNotifier`✅, `WhatsAppNotifier`✱, `NotifyBatcher`✱ | Digest render + Noop done; WhatsApp subprocess + throttled batcher stub. |
 | `reply.py` ✱ | `ReplyOutcome` (SENT/STALE/NO_PANE/ERROR), `Result`, `guarded_send(session, text, expected_prompt, *, socket)` | Guarded tmux keystroke injection — re-verify prompt still on screen before sending, else STALE. |
+| `correlate.py` ✅ | `Proc`, `PaneSession`; `is_agent_pane`, `session_id_from_command`, `list_procs`, `resolve_cwds`, `freshest_session_for_cwd`, `correlate(panes, *, procs, projects_root, ...)` | Bridges tmux panes ↔ Claude session UUIDs: exact via process argv (`--session-id`/`--parent-session-id`, subtree-walked from one `ps`), cwd→freshest-transcript fallback. Feeds daemon liveness + blocked-detection. |
 
 ### Subdirectory: `src/argus/ingest/` (the three state sources)
 

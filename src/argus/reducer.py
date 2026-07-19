@@ -62,11 +62,17 @@ def reduce(snapshot: SessionSnapshot | None, event: Event) -> SessionSnapshot:
             status=SessionStatus.STARTING,
         )
 
-    # Always refresh liveness metadata (updated_at, cwd) even when a terminal
-    # state pins the status.
+    # Always refresh liveness metadata (updated_at, cwd, branch, tokens) even
+    # when a terminal state pins the status. Tokens accumulate; branch/cwd track
+    # the latest observation. Applied before any early return so enrichment lands
+    # on every event — including terminal ones and journal replay in recover().
     snapshot.updated_at = event.ts
     if event.cwd is not None:
         snapshot.cwd = event.cwd
+    if event.branch is not None:
+        snapshot.branch = event.branch
+    if event.tokens:
+        snapshot.tokens += event.tokens
 
     # DEAD is only an INFERENCE from silence — any fresh observation disproves it,
     # so a dead session resurrects on any event (fall through to re-derive status).

@@ -16,12 +16,14 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import FastAPI, Request
 from sse_starlette.sse import EventSourceResponse
 
 from argus.config import ArgusConfig, NotifierKind
+from argus.correlate import PaneSession, correlate
 from argus.federation import Federation
 from argus.ingest import tmux
 from argus.ingest.hooks import router as hooks_router
@@ -29,6 +31,7 @@ from argus.ingest.transcripts import watch_transcripts
 from argus.models import (
     Event,
     FleetState,
+    HookEvent,
     SessionSnapshot,
     SessionStatus,
     utcnow,
@@ -65,6 +68,7 @@ def create_app(config: ArgusConfig) -> FastAPI:
         notifier, batch_seconds=config.thresholds.notify_batch_seconds
     )
     app.state.subscribers = set()  # set[asyncio.Queue[str]] of SSE listeners
+    app.state.pane_sessions = {}  # session_id -> PaneSession, refreshed each poll
 
     async def broadcast(_snapshot: SessionSnapshot | None = None) -> None:
         """Push the current merged fleet to every live SSE subscriber."""
@@ -142,12 +146,38 @@ async def state_stream(app: FastAPI) -> AsyncIterator[dict[str, str]]:
 
 
 def _current_fleet(app: FastAPI) -> FleetState:
-    """Combine this node's local snapshots with the peer-learned remote view."""
+    """Combine this node's local snapshots with the peer-learned remote view,
+    filtered to the board window so finished history stays off the board."""
 
     fleet = FleetState()
     fleet.merge(app.state.store.local_fleet())
     fleet.merge(app.state.remote)
-    return fleet
+    config: ArgusConfig = app.state.config
+    return visible_fleet(
+        fleet, now=utcnow(), window_seconds=config.thresholds.board_window_seconds
+    )
+
+
+def visible_fleet(
+    fleet: FleetState, *, now: datetime, window_seconds: int
+) -> FleetState:
+    """Return a copy of ``fleet`` holding only board-visible sessions.
+
+    A session is visible if it needs the human (BLOCKED — always shown, however
+    long it has waited) or it was active within ``window_seconds``. Everything
+    quieter drops off the board; it still lives in the journal for timelines.
+    A non-positive ``window_seconds`` disables filtering (show everything).
+    """
+
+    if window_seconds <= 0:
+        return fleet
+    cutoff = now - timedelta(seconds=window_seconds)
+    visible = FleetState()
+    for machine, sessions in fleet.machines.items():
+        kept = [s for s in sessions if s.needs_you or s.updated_at >= cutoff]
+        if kept:
+            visible.machines[machine] = kept
+    return visible
 
 
 def _dump_current(app: FastAPI) -> str:
@@ -180,6 +210,8 @@ def _load_event(body: dict[str, Any]) -> Event:
         tool_name=body.get("tool_name"),
         tool_input=body.get("tool_input"),
         raw=body.get("raw"),
+        branch=body.get("branch"),
+        tokens=int(body.get("tokens") or 0),
     )
 
 
@@ -227,6 +259,80 @@ def mark_dead_sessions(
     return changed
 
 
+def detect_blocked(
+    store: SessionStore,
+    mapping: dict[str, PaneSession],
+    *,
+    machine: str,
+    capture: Any,
+    now: datetime,
+) -> list[SessionSnapshot]:
+    """Raise ``BLOCKED`` for live panes showing an on-screen prompt.
+
+    Real Claude transcripts never record a permission prompt, so without hooks
+    installed the "needs you" bucket is otherwise unreachable. For each session
+    with a live pane, capture the pane and run :func:`argus.ingest.tmux.detect_prompt`;
+    a detected prompt is journalled as a synthetic ``Notification`` event so the
+    reducer moves the session to ``BLOCKED`` with the prompt as its question. A
+    session already ``BLOCKED`` on the same prompt is left alone (no duplicate
+    events). A prompt on a not-yet-ingested session creates its snapshot.
+
+    Args:
+        store: The session store to fold events into.
+        mapping: ``{session_id: PaneSession}`` from :func:`argus.correlate.correlate`.
+        machine: This node's hostname (stamped on synthetic events).
+        capture: ``pane_id -> str`` callable (``tmux.capture_pane``); injected in
+            tests. Exceptions per pane are swallowed.
+        now: Timestamp for synthetic events.
+
+    Returns:
+        The snapshots that transitioned to ``BLOCKED`` this pass.
+    """
+
+    changed: list[SessionSnapshot] = []
+    for session_id, pane in mapping.items():
+        snap = store.get(session_id)
+        if snap is not None and snap.is_terminal:
+            continue
+        try:
+            text = capture(pane.pane_id)
+        except Exception:  # noqa: BLE001 — a bad capture must not stall the sweep
+            continue
+        prompt = tmux.detect_prompt(text)
+        if prompt is None:
+            continue
+        if (
+            snap is not None
+            and snap.status is SessionStatus.BLOCKED
+            and snap.question == prompt
+        ):
+            continue  # already reflected on the board
+        event = Event(
+            session_id=session_id,
+            machine=machine,
+            hook_event_name=HookEvent.NOTIFICATION,
+            ts=now,
+            cwd=pane.cwd,
+            raw={"notification": prompt},
+        )
+        changed.append(store.append(event))
+    return changed
+
+
+def _detect_blocked(app: FastAPI, mapping: dict[str, PaneSession]) -> bool:
+    """Daemon-side wrapper: run :func:`detect_blocked` against real tmux."""
+
+    config: ArgusConfig = app.state.config
+    changed = detect_blocked(
+        app.state.store,
+        mapping,
+        machine=config.machine,
+        capture=tmux.capture_pane,
+        now=utcnow(),
+    )
+    return bool(changed)
+
+
 # -- lifespan background tasks ------------------------------------------------
 
 
@@ -238,6 +344,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Open the store here so its SQLite connection lives on the serving thread.
     store = SessionStore(config.paths.journal_path, config.machine)
     store.recover()
+    # recover() replays the whole journal (potentially weeks of history); evict
+    # everything long-quiet so the hot map / federation wire / liveness sweep
+    # track the live fleet, not the archive. Generous (2× board window) so a
+    # recently-blocked session still survives a daemon restart.
+    pruned = store.prune(
+        now=utcnow(), keep_within_seconds=config.thresholds.board_window_seconds * 2
+    )
+    if pruned:
+        log.info("pruned %d quiet sessions from the hot map on startup", pruned)
     app.state.store = store
     tasks = [
         asyncio.create_task(_run_transcripts(app), name="argus-transcripts"),
@@ -281,7 +396,13 @@ async def _run_transcripts(app: FastAPI) -> None:
 
 
 async def _run_tmux_poll(app: FastAPI) -> None:
-    """Poll tmux for pane liveness and mark vanished sessions ``DEAD``."""
+    """Poll tmux, correlate panes to sessions, and reconcile liveness.
+
+    Each sweep resolves which sessions are backed by a live agent pane (via
+    :func:`argus.correlate.correlate` — process-argv exact, cwd-freshest
+    fallback), stashes that map for the prompt-detector, flips vanished sessions
+    ``DEAD``, and raises ``BLOCKED`` for any live pane showing an on-screen
+    prompt (the only path to "needs you" without hooks installed)."""
 
     config: ArgusConfig = app.state.config
     store: SessionStore = app.state.store
@@ -296,14 +417,26 @@ async def _run_tmux_poll(app: FastAPI) -> None:
             panes = []
         except Exception:  # noqa: BLE001 — a bad poll must not kill the loop
             continue
-        alive = {p.session_name for p in panes} | {p.title for p in panes}
+
+        try:
+            mapping = correlate(
+                panes,
+                projects_root=config.paths.claude_projects_root,
+                now=utcnow(),
+                max_age_seconds=config.thresholds.board_window_seconds,
+            )
+        except Exception:  # noqa: BLE001 — correlation must never kill the loop
+            mapping = {}
+        app.state.pane_sessions = mapping
+
         changed = mark_dead_sessions(
             store,
             now=utcnow(),
             thresholds=config.thresholds,
-            alive_session_ids=alive,
+            alive_session_ids=set(mapping),
         )
-        if changed:
+        changed_blocked = _detect_blocked(app, mapping)
+        if changed or changed_blocked:
             await app.state.broadcast()
 
 

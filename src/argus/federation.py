@@ -148,6 +148,8 @@ class Federation:
             "tool_name": event.tool_name,
             "tool_input": event.tool_input,
             "raw": event.raw,
+            "branch": event.branch,
+            "tokens": event.tokens,
         }
 
     @staticmethod

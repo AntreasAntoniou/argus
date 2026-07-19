@@ -8,8 +8,14 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from argus.config import ArgusConfig, Paths, Thresholds
-from argus.daemon import create_app, mark_dead_sessions
-from argus.models import HookEvent, SessionSnapshot, SessionStatus, utcnow
+from argus.correlate import PaneSession
+from argus.daemon import (
+    create_app,
+    detect_blocked,
+    mark_dead_sessions,
+    visible_fleet,
+)
+from argus.models import FleetState, HookEvent, SessionSnapshot, SessionStatus, utcnow
 from argus.store import SessionStore
 
 
@@ -80,6 +86,45 @@ def test_peer_state_merges_remote_machine(tmp_path: Path) -> None:
         assert state["machines"]["astrape"][0]["session_id"] == "r1"
 
 
+def test_visible_fleet_hides_stale_but_keeps_recent_and_blocked() -> None:
+    now = utcnow()
+    fleet = FleetState()
+    fleet.upsert(
+        SessionSnapshot("recent", "m", SessionStatus.THINKING, updated_at=now)
+    )
+    fleet.upsert(
+        SessionSnapshot(
+            "stale",
+            "m",
+            SessionStatus.DEAD,
+            updated_at=now - timedelta(seconds=4000),
+        )
+    )
+    fleet.upsert(
+        SessionSnapshot(
+            "old-block",
+            "m",
+            SessionStatus.BLOCKED,
+            updated_at=now - timedelta(seconds=99999),  # waited for hours
+        )
+    )
+    out = visible_fleet(fleet, now=now, window_seconds=1800)
+    ids = {s.session_id for s in out.all_sessions()}
+    assert ids == {"recent", "old-block"}  # stale dropped, blocked always kept
+
+
+def test_visible_fleet_zero_window_shows_all() -> None:
+    now = utcnow()
+    fleet = FleetState()
+    fleet.upsert(
+        SessionSnapshot(
+            "stale", "m", SessionStatus.DEAD, updated_at=now - timedelta(days=9)
+        )
+    )
+    out = visible_fleet(fleet, now=now, window_seconds=0)
+    assert {s.session_id for s in out.all_sessions()} == {"stale"}
+
+
 def test_mark_dead_sessions_kills_silent_paneless_session(tmp_path: Path) -> None:
     # Death = silent past the window with no matched pane. A recently-active
     # session with no pane must survive (pane matching is unreliable).
@@ -106,6 +151,57 @@ def test_mark_dead_sessions_kills_silent_paneless_session(tmp_path: Path) -> Non
     assert [s.session_id for s in changed] == ["gone"]
     assert store.get("gone").status is SessionStatus.DEAD
     assert store.get("live").status is SessionStatus.THINKING
+
+
+def test_detect_blocked_raises_blocked_from_pane_prompt(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "j.sqlite3", "testbox")
+    now = utcnow()
+    store._snapshots["s1"] = SessionSnapshot(
+        session_id="s1", machine="testbox", status=SessionStatus.THINKING
+    )
+    mapping = {"s1": PaneSession(pane_id="%3", session_id="s1", cwd="/w")}
+
+    def capture(pane_id: str) -> str:
+        assert pane_id == "%3"
+        return "some output\nDo you want to proceed? (y/n)"
+
+    changed = detect_blocked(
+        store, mapping, machine="testbox", capture=capture, now=now
+    )
+    assert [s.session_id for s in changed] == ["s1"]
+    snap = store.get("s1")
+    assert snap.status is SessionStatus.BLOCKED
+    assert "proceed" in snap.question.lower()
+
+
+def test_detect_blocked_is_idempotent_on_same_prompt(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "j.sqlite3", "testbox")
+    now = utcnow()
+    mapping = {"s1": PaneSession(pane_id="%3", session_id="s1", cwd="/w")}
+    capture = lambda _p: "Do you want to proceed? (y/n)"  # noqa: E731
+
+    first = detect_blocked(store, mapping, machine="testbox", capture=capture, now=now)
+    assert len(first) == 1
+    # Same prompt still on screen next sweep → no duplicate transition/event.
+    second = detect_blocked(store, mapping, machine="testbox", capture=capture, now=now)
+    assert second == []
+
+
+def test_detect_blocked_ignores_pane_without_prompt(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "j.sqlite3", "testbox")
+    store._snapshots["s1"] = SessionSnapshot(
+        session_id="s1", machine="testbox", status=SessionStatus.TOOL
+    )
+    mapping = {"s1": PaneSession(pane_id="%3", session_id="s1", cwd="/w")}
+    changed = detect_blocked(
+        store,
+        mapping,
+        machine="testbox",
+        capture=lambda _p: "working on it, running tests...",
+        now=utcnow(),
+    )
+    assert changed == []
+    assert store.get("s1").status is SessionStatus.TOOL
 
 
 def test_mark_dead_sessions_keeps_live_pane_alive(tmp_path: Path) -> None:

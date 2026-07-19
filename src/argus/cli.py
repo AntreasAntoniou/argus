@@ -176,6 +176,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not write a .bak copy before modifying.",
     )
     hooks_p.set_defaults(backup=True)
+
+    sub.add_parser(
+        "compact",
+        help="Slim stored raw payloads and reclaim journal file space.",
+    )
     return parser
 
 
@@ -206,6 +211,20 @@ def daemon_main(argv: list[str] | None = None) -> int:
         )
         if args.dry_run:
             print(json.dumps(result, indent=2))
+        return 0
+
+    if args.command == "compact":
+        from argus.store import SessionStore
+
+        store = SessionStore(config.paths.journal_path, config.machine)
+        try:
+            rewritten, reclaimed = store.compact()
+        finally:
+            store.close()
+        print(
+            f"compacted {config.paths.journal_path}: "
+            f"{rewritten} rows slimmed, {reclaimed / 1e6:.1f} MB reclaimed"
+        )
         return 0
 
     import uvicorn
